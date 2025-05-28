@@ -11,7 +11,7 @@ with col2:
 
 # Your original title (it will appear below the logo)
 st.title("Job Search & Candidate Finder App")
-
+st.markdown("<h6 style='text-align: center;'>Beta Testing Prototype</h6>", unsafe_allow_html=True)
 # --- Rest of your existing code ---
 
 # Extract location for Job Seeker
