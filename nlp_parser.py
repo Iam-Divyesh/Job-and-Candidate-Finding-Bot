@@ -1,19 +1,18 @@
 from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
+from difflib import SequenceMatcher
 
-# Load pretrained model and tokenizer locally for NER
-MODEL_NER = "dslim/bert-base-NER"
-
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NER, local_files_only=True)
-model = AutoModelForTokenClassification.from_pretrained(MODEL_NER, local_files_only=True)
-
+MODEL_NER = "Jean-Baptiste/roberta-large-ner-english"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NER)
+model = AutoModelForTokenClassification.from_pretrained(MODEL_NER)
 ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, grouped_entities=True)
+classifier_pipeline = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
-# Zero-shot classification (will use remote if not cached)
-classifier_pipeline = pipeline("zero-shot-classification")
+labels = [
+    "job search", "hiring", "developer", "data analyst", "full stack", "React", "Python", "Surat", "remote"
+]
 
-labels = ["job search", "hiring", "developer", "data analyst", "machine learning", "React", "Python", "Bangalore",
-          "remote", "senior", "junior"]
-
+known_skills = ["python", "react", "full stack", "machine learning", "sql", "javascript", "html", "css"]
+known_locations = ["surat", "mumbai", "bangalore", "delhi", "remote", "pune"]
 
 def parse_job_prompt(prompt):
     ner_results = ner_pipeline(prompt)
@@ -23,21 +22,15 @@ def parse_job_prompt(prompt):
     location = None
     skills = []
 
-    # Custom lists to help extract more accurate info
-    known_skills = ["python", "react", "machine learning", "data analysis", "sql", "javascript", "java"]
-    known_locations = ["surat", "mumbai", "bangalore", "delhi", "remote", "pune", "ahmedabad", "hyderabad"]
-
-    # NER-based detection
     for entity in ner_results:
         word = entity.get("word", "").strip().lower()
         label = entity.get("entity_group", "")
         if label == "LOC" and not location:
             location = word.title()
         elif label in ["MISC", "ORG", "PER"]:
-            if word.lower() in known_skills:
+            if word in known_skills:
                 skills.append(word.title())
 
-    # Fallback: Keyword matching if NER fails
     prompt_lower = prompt.lower()
     for loc in known_locations:
         if loc in prompt_lower:
@@ -46,9 +39,8 @@ def parse_job_prompt(prompt):
         if skill in prompt_lower and skill.title() not in skills:
             skills.append(skill.title())
 
-    # Classification-based role detection
     for label in classification["labels"]:
-        if label in ["developer", "data analyst", "machine learning"]:
+        if label in ["full stack", "developer", "data analyst"]:
             role = label
             break
 
@@ -60,3 +52,27 @@ def parse_job_prompt(prompt):
         "location": location,
         "skills": list(set(skills))
     }
+
+def score_job_relevance(job, role, skills):
+    job_title = job.get("job_title", "").lower()
+    job_desc = job.get("job_description", "").lower()
+
+    score = 0
+    if role and role.lower() in job_title:
+        score += 3
+    elif role and role.lower() in job_desc:
+        score += 2
+
+    for skill in skills:
+        if skill.lower() in job_title:
+            score += 2
+        elif skill.lower() in job_desc:
+            score += 1
+
+    score += SequenceMatcher(None, job_title, role or "").ratio() * 2
+    return score
+
+def filter_top_jobs(jobs, role, skills, top_n=10):
+    job_scores = [(score_job_relevance(job, role, skills), job) for job in jobs]
+    sorted_jobs = sorted(job_scores, key=lambda x: x[0], reverse=True)
+    return [job for score, job in sorted_jobs[:top_n]]
