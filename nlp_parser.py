@@ -1,3 +1,4 @@
+# nlp_parser.py
 from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
 from difflib import SequenceMatcher
 
@@ -21,6 +22,7 @@ def parse_job_prompt(prompt):
     role = None
     location = None
     skills = []
+    work_preference = None
 
     for entity in ner_results:
         word = entity.get("word", "").strip().lower()
@@ -38,6 +40,9 @@ def parse_job_prompt(prompt):
     for skill in known_skills:
         if skill in prompt_lower and skill.title() not in skills:
             skills.append(skill.title())
+    for pref in ["remote", "hybrid", "on-site"]:
+        if pref in prompt_lower:
+            work_preference = pref.title()
 
     for label in classification["labels"]:
         if label in ["full stack", "developer", "data analyst"]:
@@ -50,7 +55,8 @@ def parse_job_prompt(prompt):
         "query_type": query_type,
         "role": role,
         "location": location,
-        "skills": list(set(skills))
+        "skills": list(set(skills)),
+        "work_preference": work_preference
     }
 
 def score_job_relevance(job, role, skills):
