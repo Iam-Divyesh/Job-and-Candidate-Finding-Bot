@@ -1,4 +1,14 @@
-streamlit~=1.45.1
-requests~=2.32.3
-spacy~=3.8.7
-transformers~=4.52.3
+# Core Web App
+streamlit
+python-dotenv
+
+# NLP and ML
+openai>=1.0.0
+scikit-learn
+numpy
+
+# API Calls
+requests
+
+# Optional (if you want to do any further text processing)
+# pandas
