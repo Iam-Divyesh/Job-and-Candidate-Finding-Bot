@@ -1,8 +1,11 @@
 import streamlit as st
 import requests
-import apis
 import numpy as np
 from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 @st.cache_resource
 def load_nlp_models():
@@ -97,7 +100,7 @@ def ai_job_search(data):
         "remote_jobs_only": "true" if data['work_preference'].lower() == "remote" else "false"
     }
     headers = {
-        "X-RapidAPI-Key": apis.JSEARCH_API,
+        "X-RapidAPI-Key": os.getenv("JSEARCH_API"),
         "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
     }
 
