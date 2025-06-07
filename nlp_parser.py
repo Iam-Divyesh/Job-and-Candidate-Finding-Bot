@@ -21,233 +21,364 @@ try:
         api_version=api_version,
         azure_endpoint=endpoint
     )
+    print("✅ Azure OpenAI client initialized successfully")
 except Exception as e:
-    print(f"Failed to initialize Azure OpenAI client: {e}")
+    print(f"❌ Failed to initialize Azure OpenAI client: {e}")
     client = None
 
-def validate_json_response(content):
-    """Clean and validate JSON response from GPT"""
-    # Remove markdown code blocks
-    if content.startswith("```json"):
-        content = content[7:-3].strip()
-    elif content.startswith("```"):
-        content = content[3:-3].strip()
-    
-    # Remove any text before the first {
-    json_start = content.find('{')
-    if json_start > 0:
-        content = content[json_start:]
-    
-    # Remove any text after the last }
-    json_end = content.rfind('}')
-    if json_end > 0:
-        content = content[:json_end + 1]
-    
-    return content
+def validate_and_clean_json(content):
+    """Advanced JSON cleaning and validation"""
+    try:
+        # Remove markdown code blocks
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+        
+        # Find JSON object boundaries
+        start_idx = content.find('{')
+        end_idx = content.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            content = content[start_idx:end_idx + 1]
+        
+        # Remove comments and extra whitespace
+        content = re.sub(r'//.*?\n', '', content)  # Remove single-line comments
+        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)  # Remove multi-line comments
+        content = re.sub(r'\s+', ' ', content)  # Normalize whitespace
+        
+        # Try to parse
+        parsed = json.loads(content)
+        return parsed, None
+        
+    except json.JSONDecodeError as e:
+        return None, f"JSON parsing error: {e}"
+    except Exception as e:
+        return None, f"Content cleaning error: {e}"
+
+def get_fallback_response():
+    """Return a fallback response when AI parsing fails"""
+    return {
+        "job_titles": [],
+        "locations": [],
+        "companies": [],
+        "skills": [],
+        "experience_level": "not_specified",
+        "salary_range": {
+            "min": None,
+            "max": None,
+            "currency": "USD"
+        },
+        "job_type": "not_specified",
+        "industry": "not_specified",
+        "education_level": "not_specified",
+        "query_intent": "job_search",
+        "urgency": "normal",
+        "remote_preference": "not_specified",
+        "error": "AI parsing unavailable - using fallback response"
+    }
 
 def parse_prompt_gpt(prompt: str) -> dict:
-    """Parse job/candidate requirements using GPT with improved error handling"""
+    """Enhanced GPT-only parser with better prompting and error handling"""
     
     if not client:
-        print("Azure OpenAI client not available, using fallback")
+        print("❌ Azure OpenAI client not available")
         return get_fallback_response()
     
-    system_msg = """You are an expert job assistant AI. Extract structured data from user queries about job search or hiring.
+    # Enhanced system message with more examples and clearer instructions
+    system_msg = """You are an expert AI assistant specializing in job market analysis. Your task is to extract structured information from job-related queries with high accuracy.
 
-IMPORTANT: Always return ONLY a valid JSON object with these exact keys:
-- query_type: "job" or "candidate" 
-- role: specific job title (e.g. "Software Engineer", "Data Analyst", "Python Developer")
-- location: city/country or "Remote" (e.g. "Bangalore", "Mumbai", "Remote")
-- skills: array of technical skills (e.g. ["Python", "React", "SQL"])
-- work_preference: "Remote", "On-site", "Hybrid", or null
-- experience: "entry", "mid", or "senior"
+CRITICAL INSTRUCTIONS:
+1. Always respond with valid JSON only - no explanations or additional text
+2. Extract all relevant job-related information from the user's query
+3. Use null for missing information, don't make assumptions
+4. Standardize job titles, locations, and skills to common industry terms
+5. Infer query intent based on context (job_search, career_advice, salary_inquiry, etc.)
 
-Examples:
-Input: "I want a Python developer job in Bangalore with 3 years experience"
-Output: {"query_type": "job", "role": "Python Developer", "location": "Bangalore", "skills": ["Python"], "work_preference": null, "experience": "mid"}
+RESPONSE FORMAT (JSON):
+{
+    "job_titles": ["Software Engineer", "Data Scientist"],
+    "locations": ["San Francisco", "Remote"],
+    "companies": ["Google", "Microsoft"],
+    "skills": ["Python", "Machine Learning", "SQL"],
+    "experience_level": "mid_level", // entry_level, mid_level, senior_level, executive, not_specified
+    "salary_range": {
+        "min": 80000,
+        "max": 120000,
+        "currency": "USD"
+    },
+    "job_type": "full_time", // full_time, part_time, contract, internship, freelance, not_specified
+    "industry": "technology", // technology, healthcare, finance, education, retail, etc.
+    "education_level": "bachelors", // high_school, associates, bachelors, masters, phd, not_specified
+    "query_intent": "job_search", // job_search, career_advice, salary_inquiry, skill_development, etc.
+    "urgency": "normal", // low, normal, high, immediate
+    "remote_preference": "hybrid" // remote, onsite, hybrid, not_specified
+}
 
-Input: "Looking for senior React developer for remote position"
-Output: {"query_type": "job", "role": "React Developer", "location": "Remote", "skills": ["React"], "work_preference": "Remote", "experience": "senior"}"""
+EXAMPLES:
+Query: "Looking for Python developer jobs in NYC with 5+ years experience"
+Response: {
+    "job_titles": ["Python Developer", "Software Engineer"],
+    "locations": ["New York City"],
+    "companies": [],
+    "skills": ["Python"],
+    "experience_level": "senior_level",
+    "salary_range": {"min": null, "max": null, "currency": "USD"},
+    "job_type": "not_specified",
+    "industry": "technology",
+    "education_level": "not_specified",
+    "query_intent": "job_search",
+    "urgency": "normal",
+    "remote_preference": "not_specified"
+}
 
-    user_msg = f"""Extract information from this job-related query and return ONLY valid JSON:
+Query: "What's the average salary for data scientists at Google?"
+Response: {
+    "job_titles": ["Data Scientist"],
+    "locations": [],
+    "companies": ["Google"],
+    "skills": ["Data Science", "Analytics"],
+    "experience_level": "not_specified",
+    "salary_range": {"min": null, "max": null, "currency": "USD"},
+    "job_type": "not_specified",
+    "industry": "technology",
+    "education_level": "not_specified",
+    "query_intent": "salary_inquiry",
+    "urgency": "normal",
+    "remote_preference": "not_specified"
+}"""
 
-Query: "{prompt}"
+    user_msg = f"""Parse this job-related query and extract structured information:
 
-Return only the JSON object, no other text."""
+"{prompt}"
+
+Return only valid JSON with the extracted information."""
 
     try:
+        # Make API call with enhanced parameters
         response = client.chat.completions.create(
             model=deployment,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ],
-            temperature=0.2,
-            max_tokens=500
+            temperature=0.1,  # Low temperature for consistent parsing
+            max_tokens=1000,
+            top_p=0.95,
+            frequency_penalty=0,
+            presence_penalty=0
         )
-
+        
+        # Extract and validate response
         content = response.choices[0].message.content.strip()
-        print(f"Raw GPT response: {content}")  # Debug log
         
         # Clean and validate JSON
-        content = validate_json_response(content)
-        print(f"Cleaned JSON: {content}")  # Debug log
+        parsed_data, error = validate_and_clean_json(content)
         
-        parsed = json.loads(content)
+        if error:
+            print(f"⚠️ JSON validation error: {error}")
+            print(f"Raw response: {content}")
+            return get_fallback_response()
         
-        # Validate required fields
-        required_keys = ["query_type", "role", "location", "skills", "work_preference", "experience"]
-        for key in required_keys:
-            if key not in parsed:
-                parsed[key] = None
+        # Validate required fields and structure
+        validated_data = validate_response_structure(parsed_data)
         
-        # Clean up skills array
-        if parsed.get('skills') and isinstance(parsed['skills'], list):
-            parsed['skills'] = [skill.strip() for skill in parsed['skills'] if skill.strip()]
-            parsed['skills'] = list(set(parsed['skills']))  # Remove duplicates
-        elif not parsed.get('skills'):
-            parsed['skills'] = []
+        print("✅ Successfully parsed job query")
+        return validated_data
         
-        # Validate experience level
-        if parsed.get('experience') not in ['entry', 'mid', 'senior']:
-            parsed['experience'] = 'entry'
-        
-        print(f"Final parsed result: {parsed}")  # Debug log
-        return parsed
-
-    except json.JSONDecodeError as e:
-        print(f"JSON parsing error: {e}")
-        print(f"Content that failed to parse: {content}")
-        return get_fallback_response()
     except Exception as e:
-        print(f"GPT parsing failed: {e}")
+        print(f"❌ Error in GPT parsing: {e}")
         return get_fallback_response()
 
-def get_fallback_response():
-    """Return default response structure when parsing fails"""
-    return {
-        "query_type": "job",
-        "role": None,
-        "location": None,
+def validate_response_structure(data):
+    """Validate and ensure proper structure of parsed response"""
+    
+    # Default structure
+    default_response = {
+        "job_titles": [],
+        "locations": [],
+        "companies": [],
         "skills": [],
-        "work_preference": None,
-        "experience": "entry"
+        "experience_level": "not_specified",
+        "salary_range": {
+            "min": None,
+            "max": None,
+            "currency": "USD"
+        },
+        "job_type": "not_specified",
+        "industry": "not_specified",
+        "education_level": "not_specified",
+        "query_intent": "job_search",
+        "urgency": "normal",
+        "remote_preference": "not_specified"
     }
+    
+    # Merge with parsed data, keeping defaults for missing fields
+    for key, default_value in default_response.items():
+        if key not in data:
+            data[key] = default_value
+        elif key == "salary_range" and isinstance(data[key], dict):
+            # Ensure salary_range has required fields
+            for salary_key, salary_default in default_value.items():
+                if salary_key not in data[key]:
+                    data[key][salary_key] = salary_default
+    
+    # Validate enum values
+    valid_experience_levels = ["entry_level", "mid_level", "senior_level", "executive", "not_specified"]
+    if data["experience_level"] not in valid_experience_levels:
+        data["experience_level"] = "not_specified"
+    
+    valid_job_types = ["full_time", "part_time", "contract", "internship", "freelance", "not_specified"]
+    if data["job_type"] not in valid_job_types:
+        data["job_type"] = "not_specified"
+    
+    valid_education_levels = ["high_school", "associates", "bachelors", "masters", "phd", "not_specified"]
+    if data["education_level"] not in valid_education_levels:
+        data["education_level"] = "not_specified"
+    
+    valid_urgency_levels = ["low", "normal", "high", "immediate"]
+    if data["urgency"] not in valid_urgency_levels:
+        data["urgency"] = "normal"
+    
+    valid_remote_preferences = ["remote", "onsite", "hybrid", "not_specified"]
+    if data["remote_preference"] not in valid_remote_preferences:
+        data["remote_preference"] = "not_specified"
+    
+    # Ensure lists are actually lists
+    list_fields = ["job_titles", "locations", "companies", "skills"]
+    for field in list_fields:
+        if not isinstance(data[field], list):
+            data[field] = []
+    
+    return data
 
-def extract_with_regex(prompt: str) -> dict:
-    """Regex-based fallback parser for when GPT fails"""
+def parse_job_query(query: str, use_fallback: bool = False) -> dict:
+    """Main function to parse job-related queries"""
     
-    parsed = get_fallback_response()
-    prompt_lower = prompt.lower()
+    if not query or not query.strip():
+        return {
+            **get_fallback_response(),
+            "error": "Empty query provided"
+        }
     
-    # Job roles patterns
-    job_patterns = {
-        'python developer': r'python\s*dev|python\s*engineer|python\s*programmer',
-        'java developer': r'java\s*dev|java\s*engineer|java\s*programmer',
-        'react developer': r'react\s*dev|react\s*engineer|reactjs',
-        'full stack developer': r'full[\s-]*stack|fullstack',
-        'data analyst': r'data\s*analyst|data\s*analysis',
-        'data scientist': r'data\s*scientist|ml\s*engineer',
-        'software engineer': r'software\s*engineer|swe',
-        'frontend developer': r'frontend|front[\s-]*end|ui\s*dev',
-        'backend developer': r'backend|back[\s-]*end|api\s*dev',
-        'devops engineer': r'devops|dev[\s-]*ops|infrastructure',
-        'product manager': r'product\s*manager|pm\s*role',
-        'ux designer': r'ux\s*design|user\s*experience|ui[\s/]*ux'
-    }
+    if use_fallback or not client:
+        print("ℹ️ Using fallback parsing (regex-based)")
+        return parse_with_regex(query)
     
-    # Extract role
-    for role, pattern in job_patterns.items():
-        if re.search(pattern, prompt_lower):
-            parsed['role'] = role.title()
-            break
+    print(f"🔍 Parsing query: '{query[:50]}{'...' if len(query) > 50 else ''}'")
     
-    # Common Indian cities
-    cities = ['bangalore', 'mumbai', 'delhi', 'hyderabad', 'pune', 'chennai', 
-              'kolkata', 'ahmedabad', 'surat', 'jaipur', 'gurgaon', 'noida']
+    # Try GPT parsing first
+    result = parse_prompt_gpt(query)
     
-    # Extract location
-    if 'remote' in prompt_lower:
-        parsed['location'] = 'Remote'
-        parsed['work_preference'] = 'Remote'
+    # If GPT parsing fails, fall back to regex
+    if "error" in result:
+        print("⚠️ GPT parsing failed, falling back to regex parsing")
+        return parse_with_regex(query)
+    
+    return result
+
+def parse_with_regex(query: str) -> dict:
+    """Fallback regex-based parsing for basic information extraction"""
+    
+    result = get_fallback_response()
+    query_lower = query.lower()
+    
+    # Extract common job titles
+    job_titles = []
+    title_patterns = [
+        r'\b(software engineer|developer|programmer|data scientist|analyst|manager|director|designer|architect)\b',
+        r'\b(python|java|javascript|react|angular|node\.?js) (developer|engineer)\b',
+        r'\b(frontend|backend|full.?stack|devops|qa|test) (engineer|developer)\b',
+        r'\b(product|project|technical) (manager|lead)\b'
+    ]
+    
+    for pattern in title_patterns:
+        matches = re.findall(pattern, query_lower)
+        for match in matches:
+            if isinstance(match, tuple):
+                title = ' '.join(match).title()
+            else:
+                title = match.title()
+            if title not in job_titles:
+                job_titles.append(title)
+    
+    # Extract locations
+    locations = []
+    location_patterns = [
+        r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
+        r'\b(New York|San Francisco|Los Angeles|Chicago|Boston|Seattle|Austin|Denver|Atlanta|Miami)\b',
+        r'\b(NYC|SF|LA|DC)\b',
+        r'\b(remote|work from home|wfh)\b'
+    ]
+    
+    for pattern in location_patterns:
+        matches = re.findall(pattern, query, re.IGNORECASE)
+        for match in matches:
+            if match.lower() in ['remote', 'work from home', 'wfh']:
+                result["remote_preference"] = "remote"
+            else:
+                locations.append(match.strip())
+    
+    # Extract experience level
+    if re.search(r'\b(entry.?level|junior|fresh|graduate|0.?2 years?)\b', query_lower):
+        result["experience_level"] = "entry_level"
+    elif re.search(r'\b(senior|lead|principal|5\+|5 or more|5-10|6\+)\b', query_lower):
+        result["experience_level"] = "senior_level"
+    elif re.search(r'\b(mid.?level|intermediate|2-5|3-7)\b', query_lower):
+        result["experience_level"] = "mid_level"
+    elif re.search(r'\b(executive|director|vp|c-level)\b', query_lower):
+        result["experience_level"] = "executive"
+    
+    # Extract salary information
+    salary_matches = re.findall(r'\$?(\d{2,3})[k,]?\s*-?\s*\$?(\d{2,3})[k,]?', query)
+    if salary_matches:
+        min_sal, max_sal = salary_matches[0]
+        result["salary_range"]["min"] = int(min_sal) * 1000
+        result["salary_range"]["max"] = int(max_sal) * 1000
+    
+    # Determine query intent
+    if re.search(r'\b(salary|pay|compensation|wage)\b', query_lower):
+        result["query_intent"] = "salary_inquiry"
+    elif re.search(r'\b(advice|guidance|help|should|career)\b', query_lower):
+        result["query_intent"] = "career_advice"
+    elif re.search(r'\b(learn|skill|training|course)\b', query_lower):
+        result["query_intent"] = "skill_development"
     else:
-        for city in cities:
-            if city in prompt_lower:
-                parsed['location'] = city.title()
-                break
+        result["query_intent"] = "job_search"
     
-    # Extract skills
-    skill_patterns = {
-        'python': r'\bpython\b',
-        'java': r'\bjava\b',
-        'javascript': r'\bjavascript\b|\bjs\b',
-        'react': r'\breact\b|\breactjs\b',
-        'angular': r'\bangular\b',
-        'vue': r'\bvue\b|\bvuejs\b',
-        'node.js': r'\bnode\b|\bnodejs\b',
-        'sql': r'\bsql\b|\bmysql\b|\bpostgres\b',
-        'mongodb': r'\bmongo\b|\bmongodb\b',
-        'aws': r'\baws\b|\bamazon\s*web\s*services\b',
-        'docker': r'\bdocker\b',
-        'kubernetes': r'\bkubernetes\b|\bk8s\b',
-        'git': r'\bgit\b|\bgithub\b',
-        'html': r'\bhtml\b',
-        'css': r'\bcss\b',
-        'tensorflow': r'\btensorflow\b|\btf\b',
-        'pytorch': r'\bpytorch\b',
-        'machine learning': r'\bml\b|\bmachine\s*learning\b',
-        'artificial intelligence': r'\bai\b|\bartificial\s*intelligence\b'
-    }
+    # Determine urgency
+    if re.search(r'\b(urgent|asap|immediately|soon|quickly)\b', query_lower):
+        result["urgency"] = "high"
+    elif re.search(r'\b(whenever|no rush|flexible)\b', query_lower):
+        result["urgency"] = "low"
     
-    found_skills = []
-    for skill, pattern in skill_patterns.items():
-        if re.search(pattern, prompt_lower):
-            found_skills.append(skill.title())
+    result["job_titles"] = job_titles
+    result["locations"] = list(set(locations))  # Remove duplicates
+    result["error"] = "Parsed using regex fallback"
     
-    parsed['skills'] = found_skills
-    
-    # Extract experience
-    experience_patterns = {
-        'senior': r'\bsenior\b|\blead\b|\b5\+?\s*years?\b|\bexperienced\b|\b6\+?\s*years?\b',
-        'mid': r'\bmid\b|\bintermediate\b|\b2-4\s*years?\b|\b3\s*years?\b|\b4\s*years?\b',
-        'entry': r'\bentry\b|\bfresher?\b|\bgraduate\b|\bjunior\b|\b0-2\s*years?\b|\bnew\s*grad\b'
-    }
-    
-    for level, pattern in experience_patterns.items():
-        if re.search(pattern, prompt_lower):
-            parsed['experience'] = level
-            break
-    
-    # Work preference
-    if 'hybrid' in prompt_lower:
-        parsed['work_preference'] = 'Hybrid'
-    elif 'onsite' in prompt_lower or 'on-site' in prompt_lower:
-        parsed['work_preference'] = 'On-site'
-    elif 'remote' in prompt_lower:
-        parsed['work_preference'] = 'Remote'
-    
-    # Determine query type
-    if any(word in prompt_lower for word in ['hire', 'recruit', 'candidate', 'looking for', 'need']):
-        parsed['query_type'] = 'candidate'
-    else:
-        parsed['query_type'] = 'job'
-    
-    return parsed
+    return result
 
 # Test function
 def test_parser():
-    """Test the parser with sample inputs"""
-    test_cases = [
-        "I want a Python developer job in Bangalore with 3 years experience",
-        "Looking for senior React developer for remote position",
-        "We need a data scientist with ML experience in Mumbai",
-        "Fresh graduate seeking entry level Java developer role in Pune"
+    """Test the parser with sample queries"""
+    
+    test_queries = [
+        "Looking for Python developer jobs in San Francisco with 5+ years experience",
+        "What's the average salary for data scientists at Google?",
+        "Remote React developer positions",
+        "Entry level software engineer jobs in NYC",
+        "Senior DevOps engineer roles with $120k-150k salary",
+        "Career advice for transitioning to data science"
     ]
     
-    for test in test_cases:
-        print(f"\nInput: {test}")
-        result = parse_prompt_gpt(test)
-        print(f"Output: {json.dumps(result, indent=2)}")
+    print("🧪 Testing NLP Parser\n" + "="*50)
+    
+    for i, query in enumerate(test_queries, 1):
+        print(f"\n🔍 Test {i}: {query}")
+        result = parse_job_query(query)
+        print(f"📊 Result: {json.dumps(result, indent=2)}")
+        print("-" * 50)
 
 if __name__ == "__main__":
+    # Run tests if executed directly
     test_parser()

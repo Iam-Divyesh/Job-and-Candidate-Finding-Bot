@@ -12,3 +12,7 @@ requests
 
 # Optional (if you want to do any further text processing)
 # pandas
+
+
+transformers
+torch
