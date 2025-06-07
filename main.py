@@ -15,18 +15,18 @@ import re
 # Load environment variables
 load_dotenv()
 
-# Azure OpenAI Setup
+# Azure OpenAI Setup for GPT-4.1-mini
 endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 api_key = os.getenv("AZURE_OPENAI_API_KEY")
 api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")  # Should be gpt-4.1-mini
 
 client = AzureOpenAI(api_key=api_key, api_version=api_version, azure_endpoint=endpoint)
 
 # External APIs
 JSEARCH_API_KEY = os.getenv("JSEARCH_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
-OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")  # For location geocoding
+OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
 
 @st.cache_resource
 def load_nlp_pipelines():
@@ -53,7 +53,7 @@ def validate_location_with_api(location):
             'q': location,
             'key': OPENCAGE_API_KEY,
             'limit': 1,
-            'countrycode': 'in',  # Restrict to India
+            'countrycode': 'in',
             'no_annotations': 1
         }
         
@@ -65,7 +65,6 @@ def validate_location_with_api(location):
                 formatted_location = result['formatted']
                 components = result['components']
                 
-                # Extract city and state for Indian locations
                 city = components.get('city') or components.get('town') or components.get('village')
                 state = components.get('state')
                 
@@ -81,72 +80,64 @@ def validate_location_with_api(location):
         st.warning(f"Location validation failed: {e}")
         return location
 
-def predict_salary(role, experience, location):
-    base_salaries = {
-        "python developer": {"entry": 5, "mid": 10, "senior": 18},
-        "java developer": {"entry": 4.5, "mid": 9, "senior": 16},
-        "react developer": {"entry": 5.5, "mid": 11, "senior": 19},
-        "full stack developer": {"entry": 6, "mid": 12, "senior": 20},
-        "data analyst": {"entry": 5, "mid": 10, "senior": 18},
-        "data scientist": {"entry": 7, "mid": 14, "senior": 25},
-        "software engineer": {"entry": 4.5, "mid": 9, "senior": 16},
-        "frontend developer": {"entry": 4, "mid": 8, "senior": 15},
-        "backend developer": {"entry": 5, "mid": 10, "senior": 18},
-        "devops engineer": {"entry": 6, "mid": 12, "senior": 22},
-        "product manager": {"entry": 8, "mid": 16, "senior": 30},
-        "ux designer": {"entry": 4, "mid": 8, "senior": 15},
-        "ui designer": {"entry": 4, "mid": 8, "senior": 15},
-        "mobile developer": {"entry": 5, "mid": 10, "senior": 18},
-        "machine learning engineer": {"entry": 7, "mid": 14, "senior": 25},
-        "qa engineer": {"entry": 3.5, "mid": 7, "senior": 14},
-        "business analyst": {"entry": 4, "mid": 8, "senior": 16},
-        "system administrator": {"entry": 3.5, "mid": 7, "senior": 14},
-        "network engineer": {"entry": 4, "mid": 8, "senior": 15},
-        "database administrator": {"entry": 4.5, "mid": 9, "senior": 17},
-        "developer": {"entry": 4, "mid": 8, "senior": 15},
-        "engineer": {"entry": 4.5, "mid": 9, "senior": 16},
-        "analyst": {"entry": 4, "mid": 8, "senior": 14},
-        "default": {"entry": 3, "mid": 7, "senior": 12}
+def predict_salary_dynamically(parsed_data):
+    """Dynamic salary prediction based on parsed job data"""
+    role = parsed_data.get('role', '').lower()
+    experience = parsed_data.get('experience', 'entry')
+    location = parsed_data.get('location', '').lower()
+    skills = parsed_data.get('skills', [])
+    
+    # Base salary calculation with skill multipliers
+    base_ranges = {
+        'entry': {'min': 3, 'max': 8},
+        'mid': {'min': 7, 'max': 15},
+        'senior': {'min': 15, 'max': 30},
+        'lead': {'min': 25, 'max': 45}
     }
     
-    location_factors = {
-        "bangalore": 1.3, "mumbai": 1.25, "delhi": 1.2, "gurgaon": 1.2,
-        "hyderabad": 1.15, "pune": 1.1, "chennai": 1.1, "noida": 1.15,
-        "surat": 0.9, "ahmedabad": 0.95, "jaipur": 0.9, "kolkata": 0.95,
-        "kochi": 1.05, "indore": 0.9, "bhopal": 0.85, "lucknow": 0.85,
-        "chandigarh": 1.0, "thiruvananthapuram": 1.0, "coimbatore": 0.95,
-        "vadodara": 0.9, "nagpur": 0.85, "visakhapatnam": 0.9,
-        "remote": 1.0, "default": 1.0
+    # Role-based multipliers (dynamic detection)
+    role_multipliers = {
+        'data scientist': 1.4, 'machine learning': 1.4, 'ai engineer': 1.4,
+        'product manager': 1.3, 'architect': 1.3, 'technical lead': 1.3,
+        'full stack': 1.2, 'devops': 1.2, 'cloud': 1.2,
+        'frontend': 1.0, 'backend': 1.1, 'mobile': 1.1,
+        'qa': 0.9, 'test': 0.9, 'support': 0.8
     }
     
-    # Find matching role (case insensitive, partial match)
-    role_key = "default"
-    if role:
-        role_lower = role.lower()
-        
-        # Direct match first
-        if role_lower in base_salaries:
-            role_key = role_lower
-        else:
-            # Partial match
-            for salary_role in base_salaries.keys():
-                if salary_role in role_lower or any(word in role_lower for word in salary_role.split()):
-                    role_key = salary_role
-                    break
+    # Location multipliers (dynamic)
+    location_multipliers = {
+        'bangalore': 1.3, 'mumbai': 1.25, 'delhi': 1.2, 'gurgaon': 1.2,
+        'hyderabad': 1.15, 'pune': 1.1, 'chennai': 1.1, 'noida': 1.15,
+        'remote': 1.0, 'anywhere': 1.0
+    }
     
-    # Find location factor
-    location_key = "default"
-    if location:
-        location_lower = location.lower()
-        for loc in location_factors.keys():
-            if loc in location_lower:
-                location_key = loc
-                break
+    # Skill-based bonus
+    high_value_skills = ['react', 'node.js', 'python', 'aws', 'docker', 'kubernetes', 
+                        'machine learning', 'data science', 'blockchain', 'ai']
+    skill_bonus = sum(0.1 for skill in skills if any(hvs in skill.lower() for hvs in high_value_skills))
     
-    base = base_salaries[role_key][experience]
-    multiplier = location_factors[location_key]
-    variation = 1 + (np.random.rand() * 0.3 - 0.15)
-    return round(base * multiplier * variation, 1)
+    # Calculate base salary
+    base_range = base_ranges.get(experience, base_ranges['entry'])
+    
+    # Apply multipliers
+    role_mult = 1.0
+    for role_key, mult in role_multipliers.items():
+        if role_key in role:
+            role_mult = mult
+            break
+    
+    location_mult = location_multipliers.get(location, 1.0)
+    
+    # Final calculation
+    min_salary = base_range['min'] * role_mult * location_mult * (1 + skill_bonus)
+    max_salary = base_range['max'] * role_mult * location_mult * (1 + skill_bonus)
+    
+    return {
+        'min': round(min_salary, 1),
+        'max': round(max_salary, 1),
+        'currency': 'INR',
+        'period': 'annual'
+    }
 
 def fetch_jobs(parsed):
     if not JSEARCH_API_KEY:
@@ -159,28 +150,20 @@ def fetch_jobs(parsed):
         "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
     }
     
-    # Build search query more intelligently
+    # Build intelligent search query
     query_parts = []
     
     if parsed.get('role'):
         query_parts.append(parsed['role'])
-    else:
-        query_parts.append("software developer")  # Default fallback
     
-    if parsed.get('location') and parsed['location'].lower() != 'remote':
-        # Use validated location
-        validated_location = validate_location_with_api(parsed['location'])
-        query_parts.append(f"in {validated_location}")
-    
-    # Add top skills to query
     if parsed.get('skills') and len(parsed['skills']) > 0:
         query_parts.extend(parsed['skills'][:2])
     
-    # Add experience level if specified
-    if parsed.get('experience') and parsed['experience'] in ['senior', 'mid']:
-        query_parts.insert(0, parsed['experience'])
+    if parsed.get('location') and parsed['location'].lower() not in ['remote', 'anywhere']:
+        validated_location = validate_location_with_api(parsed['location'])
+        query_parts.append(f"in {validated_location}")
     
-    query = " ".join(query_parts)
+    query = " ".join(query_parts) if query_parts else "software developer"
     
     querystring = {
         "query": query,
@@ -217,7 +200,6 @@ def fetch_candidates(parsed):
         st.warning("⚠️ SERP_API_KEY not found in environment variables")
         return []
     
-    # Build search query
     search_parts = []
     if parsed.get('role'):
         search_parts.append(parsed['role'])
@@ -225,7 +207,7 @@ def fetch_candidates(parsed):
         search_parts.extend(parsed['skills'][:3])
     
     search_query = f"{' '.join(search_parts)} site:linkedin.com/in/"
-    if parsed.get('location') and parsed['location'].lower() != 'remote':
+    if parsed.get('location') and parsed['location'].lower() not in ['remote', 'anywhere']:
         validated_location = validate_location_with_api(parsed['location'])
         search_query += f" {validated_location}"
     
@@ -257,29 +239,75 @@ def fetch_candidates(parsed):
         st.error(f"❌ Failed to fetch candidates: {e}")
         return []
 
+def display_parsed_results(parsed, user_type="jobseeker"):
+    """Display parsed results in a structured format"""
+    st.subheader("🎯 AI Analysis Results")
+    
+    if user_type == "jobseeker":
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Role", parsed.get('role') or "Not detected", 
+                     help="Job role/position you're looking for")
+            st.metric("Experience Level", (parsed.get('experience') or "entry").title(),
+                     help="Your experience level")
+        with col2:
+            st.metric("Location", parsed.get('location') or "Not specified",
+                     help="Preferred work location")
+            st.metric("Work Preference", parsed.get('work_preference') or "Not specified",
+                     help="Remote/On-site/Hybrid preference")
+        with col3:
+            skills_count = len(parsed.get('skills', []))
+            st.metric("Skills Found", skills_count,
+                     help="Technical skills identified")
+            st.metric("Job Type", parsed.get('job_type') or "Not specified",
+                     help="Full-time/Part-time/Contract")
+        
+        # Additional jobseeker details
+        if parsed.get('salary'):
+            st.info(f"💰 Expected Salary: {parsed['salary']}")
+        if parsed.get('industry'):
+            st.info(f"🏭 Target Industry: {parsed['industry']}")
+        if parsed.get('platform'):
+            st.info(f"📱 Platform Preference: {parsed['platform']}")
+    
+    else:  # recruiter
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Target Role", parsed.get('role') or "Not specified")
+            st.metric("Required Experience", parsed.get('experience') or "Not specified")
+        with col2:
+            st.metric("Location", parsed.get('location') or "Any")
+            skills_count = len(parsed.get('skills', []))
+            st.metric("Required Skills", skills_count)
+    
+    # Skills display
+    if parsed.get('skills'):
+        st.write("**Skills:** " + ", ".join(parsed['skills']))
+    
+    # Detailed analysis
+    with st.expander("🔧 Detailed AI Analysis"):
+        st.json(parsed)
+
 # Main UI
 tabs = st.tabs(["🔍 AI Job Search", "📌 Smart Recruiter", "💰 Salary Predictor"])
 
 with tabs[0]:
     st.subheader("AI-Powered Job Search")
     
-    # Add example prompts
     with st.expander("💡 Example Prompts - Click to expand"):
         st.markdown("""
         **Job Search Examples:**
-        - 'I want a Python developer job in Bangalore with 3 years experience'
-        - 'Looking for remote React developer position with Redux skills'
-        - 'Senior data analyst role in Mumbai with SQL and Power BI'
-        - 'Full stack developer job in Surat with Node.js and MongoDB'
-        - 'Entry level Java developer position in Pune'
-        - 'DevOps engineer role with AWS and Docker experience in Hyderabad'
-        - 'Frontend developer with Angular and TypeScript in Delhi'
-        - 'Machine learning engineer with Python and TensorFlow'
+        - 'I want a Python developer job in Bangalore with 3 years experience, full-time, 8-12 LPA'
+        - 'Looking for remote React developer position with Redux skills, hybrid work'
+        - 'Senior data analyst role in Mumbai with SQL and Power BI, fintech industry'
+        - 'Full stack developer job in Surat with Node.js and MongoDB, startup platform'
+        - 'Entry level Java developer position in Pune, part-time preferred'
+        - 'DevOps engineer role with AWS and Docker experience in Hyderabad, 15+ LPA'
         """)
     
     prompt = st.text_area(
         "Describe your ideal job:", 
-        placeholder="e.g. I want a Python developer job in Bangalore with 3 years experience and Django skills...",
+        placeholder="e.g. I want a Python developer job in Bangalore with 3 years experience, Django skills, full-time, 8-12 LPA salary...",
         height=100
     )
 
@@ -287,95 +315,51 @@ with tabs[0]:
         if not prompt.strip():
             st.warning("⚠️ Please describe your job preferences")
         else:
-            with st.spinner("🤖 Analyzing your preferences with AI..."):
-                # Use only GPT parsing
-                parsed = parse_prompt_gpt(prompt)
+            with st.spinner("🤖 Analyzing your preferences with GPT-4.1-mini..."):
+                parsed = parse_prompt_gpt(prompt, query_type="jobseeker")
                 
-                st.subheader("🎯 AI Analysis Results")
+                display_parsed_results(parsed, "jobseeker")
                 
-                # Display results in a nice format
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Role", parsed.get('role') or "Not detected")
-                    st.metric("Location", parsed.get('location') or "Not detected")
-                with col2:
-                    st.metric("Experience", (parsed.get('experience') or "entry").title())
-                    st.metric("Work Style", parsed.get('work_preference') or "Not specified")
-                with col3:
-                    skills_count = len(parsed.get('skills', []))
-                    st.metric("Skills Found", skills_count)
-                    if skills_count > 0:
-                        st.write("**Skills:** " + ", ".join(parsed['skills']))
-
-                # Show detailed analysis for debugging
-                with st.expander("🔧 Detailed AI Analysis"):
-                    st.json(parsed)
-
-                # Show salary prediction if we have role
+                # Dynamic salary prediction
                 if parsed.get('role'):
-                    experience = parsed.get('experience', 'entry')
-                    location = parsed.get('location', 'default')
-                    salary = predict_salary(parsed['role'], experience, location)
-                    
-                    if location and location.lower() != 'default':
-                        st.success(f"💰 Predicted Salary Range: **₹{salary-2} - ₹{salary+2} LPA** in {location}")
-                    else:
-                        st.info(f"💰 Average Salary Range: **₹{salary-2} - ₹{salary+2} LPA** (India average)")
-                else:
-                    st.warning("⚠️ Cannot predict salary - role not detected clearly. Try being more specific about the job role.")
+                    salary_prediction = predict_salary_dynamically(parsed)
+                    location_text = f" in {parsed['location']}" if parsed.get('location') else ""
+                    st.success(f"💰 Predicted Salary Range: **₹{salary_prediction['min']} - ₹{salary_prediction['max']} LPA**{location_text}")
 
-                # Fetch jobs
+                # Fetch and display jobs
                 st.subheader("🔍 Job Search Results")
                 jobs = fetch_jobs(parsed)
                 
                 if not jobs:
                     st.error("❌ No matching jobs found")
-                    
-                    # Provide suggestions based on what was detected
                     st.markdown("### 💡 Suggestions to improve your search:")
-                    suggestions = []
-                    if not parsed.get('role'):
-                        suggestions.append("• Be more specific about the job role (e.g., 'Python Developer', 'Data Analyst', 'Software Engineer')")
-                    if not parsed.get('location'):
-                        suggestions.append("• Specify a location (e.g., 'in Mumbai', 'Bangalore', 'remote position')")
-                    if not parsed.get('skills'):
-                        suggestions.append("• Mention specific skills (e.g., 'with React', 'using Python', 'SQL experience')")
-                    
-                    suggestions.extend([
-                        "• Try using more common job titles",
-                        "• Include years of experience (e.g., '3 years experience', 'senior level')",
-                        "• Check if your API keys are properly configured"
-                    ])
-                    
+                    suggestions = [
+                        "• Be more specific about the job role",
+                        "• Try alternative skill names or technologies",
+                        "• Consider expanding location preferences",
+                        "• Use more common industry terms"
+                    ]
                     for suggestion in suggestions:
                         st.markdown(suggestion)
-                        
                 else:
                     st.success(f"🎉 Found **{len(jobs)}** matching jobs!")
                     
-                    # Filter and display jobs
-                    for idx, job in enumerate(jobs[:10], 1):  # Show top 10 jobs
+                    for idx, job in enumerate(jobs[:10], 1):
                         with st.expander(f"**{idx}. {job.get('job_title', 'Job Title Not Available')}**"):
-                            
-                            # Job details in columns
                             col1, col2 = st.columns(2)
                             
                             with col1:
                                 st.markdown(f"**🏢 Company:** {job.get('employer_name', 'N/A')}")
                                 st.markdown(f"**📍 Location:** {job.get('job_city', 'N/A')}, {job.get('job_country', 'N/A')}")
                                 st.markdown(f"**💼 Type:** {job.get('job_employment_type', 'N/A')}")
-                                
-                                # Posted date
                                 if job.get('job_posted_at_datetime_utc'):
                                     st.markdown(f"**📅 Posted:** {job['job_posted_at_datetime_utc'][:10]}")
                             
                             with col2:
-                                # Salary information
                                 if job.get('job_min_salary') and job.get('job_max_salary'):
                                     min_sal = job['job_min_salary']
                                     max_sal = job['job_max_salary']
                                     currency = job.get('job_salary_currency', 'USD')
-                                    
                                     if currency == 'USD':
                                         st.markdown(f"**💵 Salary:** ${min_sal:,} - ${max_sal:,}")
                                     else:
@@ -383,30 +367,19 @@ with tabs[0]:
                                 else:
                                     st.markdown("**💵 Salary:** Not specified")
                                 
-                                # Remote/onsite info
                                 if job.get('job_is_remote'):
                                     st.markdown("**🏠 Remote:** ✅ Yes")
                                 else:
                                     st.markdown("**🏠 Remote:** ❌ No")
                             
-                            # Job description
                             if job.get('job_description'):
                                 desc = job['job_description']
                                 if len(desc) > 300:
                                     desc = desc[:300] + "..."
                                 st.markdown(f"**📋 Description:** {desc}")
                             
-                            # Apply button
                             if job.get('job_apply_link'):
                                 st.markdown(f"[🔗 **Apply Now**]({job['job_apply_link']})")
-                            
-                            # Job highlights
-                            if job.get('job_highlights'):
-                                highlights = job['job_highlights']
-                                if highlights.get('Qualifications'):
-                                    st.markdown("**🎯 Key Qualifications:**")
-                                    for qual in highlights['Qualifications'][:3]:
-                                        st.markdown(f"• {qual}")
 
 with tabs[1]:
     st.subheader("Smart Recruiter Pro")
@@ -414,17 +387,16 @@ with tabs[1]:
     with st.expander("💡 Example Prompts for Recruiters"):
         st.markdown("""
         **Candidate Search Examples:**
-        - 'We need a senior React developer with Redux experience in Mumbai'
-        - 'Looking for Python data scientist with ML and TensorFlow experience'
+        - 'We need a senior React developer with Redux experience in Mumbai, 5+ years'
+        - 'Looking for Python data scientist with ML and TensorFlow experience, remote OK'
         - 'Hiring full stack developer with Node.js and MongoDB skills in Bangalore'
-        - 'Need DevOps engineer with AWS and Kubernetes experience'
-        - 'Searching for UI/UX designer with Figma skills in Delhi'
-        - 'Want to hire Java developer with Spring Boot experience'
+        - 'Need DevOps engineer with AWS and Kubernetes experience, senior level'
+        - 'Searching for UI/UX designer with Figma skills in Delhi, 3-5 years experience'
         """)
     
     prompt = st.text_area(
         "Describe your ideal candidate:", 
-        placeholder="e.g. We need a senior React developer with Redux experience in Mumbai...",
+        placeholder="e.g. We need a senior React developer with Redux experience in Mumbai, 5+ years experience...",
         height=100
     )
 
@@ -432,39 +404,18 @@ with tabs[1]:
         if not prompt.strip():
             st.warning("⚠️ Please describe your candidate requirements")
         else:
-            with st.spinner("🤖 Using AI to find LinkedIn profiles..."):
-                # Parse requirements
-                parsed = parse_prompt_gpt(prompt)
-                parsed['query_type'] = 'candidate'
+            with st.spinner("🤖 Using GPT-4.1-mini to find LinkedIn profiles..."):
+                parsed = parse_prompt_gpt(prompt, query_type="recruiter")
                 
-                st.subheader("🎯 Candidate Requirements Analysis")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Target Role", parsed.get('role') or "Not specified")
-                with col2:
-                    st.metric("Preferred Location", parsed.get('location') or "Any")
-                with col3:
-                    skills_count = len(parsed.get('skills', []))
-                    st.metric("Required Skills", skills_count)
-                
-                if parsed.get('skills'):
-                    st.write("**Key Skills:** " + ", ".join(parsed['skills']))
-
-                # Show detailed analysis
-                with st.expander("🔧 Detailed Requirements Analysis"):
-                    st.json(parsed)
+                display_parsed_results(parsed, "recruiter")
 
                 candidates = fetch_candidates(parsed)
                 if not candidates:
                     st.warning("❌ No relevant candidates found")
-                    
                     st.markdown("### 💡 Tips to find better candidates:")
-                    st.markdown("• Try broader skill terms (e.g., 'developer' instead of specific frameworks)")
+                    st.markdown("• Try broader skill terms")
                     st.markdown("• Remove location restrictions for wider search")
                     st.markdown("• Use more common job titles")
-                    st.markdown("• Check if your SERP API key is configured")
-                    
                 else:
                     st.subheader(f"👥 Found {len(candidates)} Potential Candidates")
                     
@@ -476,86 +427,47 @@ with tabs[1]:
                         with st.expander(f"**{idx}. {title}**"):
                             if snippet:
                                 st.markdown(f"**📋 Profile Preview:** {snippet}")
-                            
                             st.markdown(f"[🔗 **View LinkedIn Profile**]({link})")
-                            
-                            # Extract additional info if available
                             if candidate.get("date"):
                                 st.markdown(f"**📅 Last Updated:** {candidate['date']}")
 
 with tabs[2]:
     st.subheader("💰 AI Salary Predictor")
+    st.markdown("Get intelligent salary predictions using AI analysis")
     
-    st.markdown("Get accurate salary predictions based on role, experience, and location in India.")
+    salary_prompt = st.text_area(
+        "Describe the role for salary prediction:",
+        placeholder="e.g. Senior Python developer with Django and AWS skills in Bangalore with 5 years experience...",
+        height=80
+    )
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        role = st.selectbox(
-            "Job Role", 
-            ["Python Developer", "Java Developer", "React Developer", "Full Stack Developer", 
-             "Data Analyst", "Data Scientist", "Software Engineer", "Frontend Developer",
-             "Backend Developer", "DevOps Engineer", "Product Manager", "UX Designer",
-             "UI Designer", "Mobile Developer", "Machine Learning Engineer", "QA Engineer",
-             "Business Analyst", "System Administrator", "Network Engineer", "Database Administrator"]
-        )
-    with col2:
-        experience = st.selectbox("Experience Level", ["Entry", "Mid", "Senior"])
-    with col3:
-        location = st.selectbox(
-            "Location", 
-            ["Bangalore", "Mumbai", "Delhi", "Gurgaon", "Hyderabad", "Pune", 
-             "Chennai", "Noida", "Surat", "Ahmedabad", "Jaipur", "Kolkata", 
-             "Kochi", "Indore", "Bhopal", "Lucknow", "Chandigarh", "Remote", "Other"]
-        )
-
     if st.button("💰 Predict Salary", type="primary"):
-        with st.spinner("🔮 Calculating salary prediction..."):
-            salary = predict_salary(role, experience.lower(), location)
-            
-            # Main prediction
-            st.success(f"💵 **Predicted Salary Range for {role} in {location}:** ₹{salary-2} - ₹{salary+2} LPA")
-            
-            # Detailed comparison
-            st.subheader("📊 Salary Analysis")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🌍 Location Comparison")
-                base_salary = predict_salary(role, experience.lower(), "Other")
+        if not salary_prompt.strip():
+            st.warning("⚠️ Please describe the role")
+        else:
+            with st.spinner("🔮 Calculating intelligent salary prediction..."):
+                parsed = parse_prompt_gpt(salary_prompt, query_type="salary")
+                salary_prediction = predict_salary_dynamically(parsed)
                 
-                if location != "Other" and location != "Remote":
-                    percentage_diff = round((salary/base_salary-1)*100)
-                    if percentage_diff > 0:
-                        st.write(f"📈 **{location}** salary is **{percentage_diff}%** higher than national average")
-                    elif percentage_diff < 0:
-                        st.write(f"📉 **{location}** salary is **{abs(percentage_diff)}%** lower than national average")
-                    else:
-                        st.write(f"📊 **{location}** salary is at national average")
+                st.success(f"💵 **Predicted Salary Range:** ₹{salary_prediction['min']} - ₹{salary_prediction['max']} LPA")
                 
-                # Show top paying cities for this role
-                top_cities = ["Bangalore", "Mumbai", "Delhi", "Hyderabad", "Pune"]
-                st.markdown("**Top Paying Cities:**")
-                for city in top_cities:
-                    city_salary = predict_salary(role, experience.lower(), city)
-                    st.write(f"• {city}: ₹{city_salary-1}-{city_salary+1} LPA")
-            
-            with col2:
-                st.markdown("### 📈 Experience Level Comparison")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### 📊 Analysis Factors")
+                    st.write(f"**Role:** {parsed.get('role', 'Not specified')}")
+                    st.write(f"**Experience:** {parsed.get('experience', 'entry').title()}")
+                    st.write(f"**Location:** {parsed.get('location', 'India average')}")
+                    if parsed.get('skills'):
+                        st.write(f"**Skills:** {', '.join(parsed['skills'])}")
                 
-                entry_salary = predict_salary(role, 'entry', location)
-                mid_salary = predict_salary(role, 'mid', location)
-                senior_salary = predict_salary(role, 'senior', location)
-                
-                st.write(f"👶 **Entry Level:** ₹{entry_salary-1}-{entry_salary+1} LPA")
-                st.write(f"👔 **Mid Level:** ₹{mid_salary-1}-{mid_salary+1} LPA")
-                st.write(f"🎖️ **Senior Level:** ₹{senior_salary-1}-{senior_salary+1} LPA")
-                
-                if experience.lower() != 'senior':
-                    growth = round((senior_salary/salary-1)*100)
-                    st.info(f"💡 You could earn **{growth}%** more at senior level!")
+                with col2:
+                    st.markdown("### 💡 Factors Affecting Salary")
+                    st.write("• High-demand skills increase salary")
+                    st.write("• Location significantly impacts compensation")
+                    st.write("• Experience level is a major factor")
+                    st.write("• Industry and company size matter")
 
-# Enhanced CSS with better styling
+# Enhanced CSS
 st.markdown("""
 <style>
     .stExpander {
