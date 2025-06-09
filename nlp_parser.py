@@ -27,28 +27,46 @@ except Exception as e:
     client = None
 
 def validate_and_clean_json(content):
-    """Advanced JSON cleaning and validation"""
+    """Advanced JSON cleaning and validation with better error handling"""
     try:
-        # Remove markdown code blocks
+        # Remove markdown code blocks and extra content
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
         
-        # Find JSON object boundaries
-        start_idx = content.find('{')
-        end_idx = content.rfind('}')
+        # Find JSON object boundaries more precisely
+        brace_count = 0
+        start_idx = -1
+        end_idx = -1
         
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        for i, char in enumerate(content):
+            if char == '{':
+                if start_idx == -1:
+                    start_idx = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_idx != -1:
+                    end_idx = i
+                    break
+        
+        if start_idx != -1 and end_idx != -1:
             content = content[start_idx:end_idx + 1]
         
-        # Remove comments and extra whitespace
-        content = re.sub(r'//.*?\n', '', content)
-        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
-        content = re.sub(r'\s+', ' ', content)
+        # Clean up common JSON issues
+        content = re.sub(r'//.*?\n', '', content)  # Remove single-line comments
+        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)  # Remove multi-line comments
+        content = re.sub(r',\s*}', '}', content)  # Remove trailing commas before }
+        content = re.sub(r',\s*]', ']', content)  # Remove trailing commas before ]
         
         # Try to parse
         parsed = json.loads(content)
+        
+        # Validate that it's a dictionary
+        if not isinstance(parsed, dict):
+            return None, "Response is not a JSON object"
+            
         return parsed, None
         
     except json.JSONDecodeError as e:
@@ -57,14 +75,14 @@ def validate_and_clean_json(content):
         return None, f"Content cleaning error: {e}"
 
 def get_fallback_response(query_type="jobseeker"):
-    """Return a fallback response when AI parsing fails"""
+    """Return a structured fallback response when AI parsing fails"""
     base_response = {
         "role": None,
         "skills": [],
         "experience": "entry",
         "location": None,
         "work_preference": None,
-        "error": "AI parsing unavailable - using fallback response"
+        "parsing_status": "fallback_used"
     }
     
     if query_type == "jobseeker":
@@ -80,163 +98,187 @@ def get_fallback_response(query_type="jobseeker"):
     else:  # salary prediction
         return base_response
 
+def normalize_parsed_data(data, query_type="jobseeker"):
+    """Normalize and validate parsed data to ensure all required fields are present"""
+    
+    # Base structure for all types
+    normalized = {
+        "role": data.get("role"),
+        "skills": data.get("skills", []) if isinstance(data.get("skills"), list) else [],
+        "experience": data.get("experience", "entry"),
+        "location": data.get("location"),
+        "work_preference": data.get("work_preference"),
+        "parsing_status": "success"
+    }
+    
+    # Add jobseeker-specific fields
+    if query_type == "jobseeker":
+        normalized.update({
+            "salary": data.get("salary"),
+            "job_type": data.get("job_type"),
+            "industry": data.get("industry"),
+            "platform": data.get("platform")
+        })
+    
+    # Normalize experience levels
+    exp_map = {
+        "0": "entry", "1": "entry", "2": "entry",
+        "3": "mid", "4": "mid", "5": "mid",
+        "6": "senior", "7": "senior", "8": "senior",
+        "9": "lead", "10": "lead", "fresher": "entry",
+        "beginner": "entry", "junior": "entry", "intermediate": "mid",
+        "experienced": "senior", "expert": "lead", "architect": "lead"
+    }
+    
+    exp_str = str(normalized.get("experience", "")).lower()
+    for key, value in exp_map.items():
+        if key in exp_str:
+            normalized["experience"] = value
+            break
+    
+    # Ensure experience is valid
+    if normalized["experience"] not in ["entry", "mid", "senior", "lead"]:
+        normalized["experience"] = "entry"
+    
+    return normalized
+
 def parse_prompt_gpt(prompt: str, query_type: str = "jobseeker") -> dict:
-    """Enhanced GPT-4.1-mini parser with dynamic requirement recognition"""
+    """Enhanced GPT-4.1-mini parser with improved prompts and validation"""
     
     if not client:
         print("❌ Azure OpenAI client not available")
         return get_fallback_response(query_type)
     
-    # Dynamic system message based on query type
+    # Enhanced system messages with more specific instructions
     if query_type == "jobseeker":
-        system_msg = """You are an expert AI assistant specializing in job search analysis. Your task is to extract structured information from job seeker queries with high accuracy.
+        system_msg = """You are an expert job search analyzer. Extract structured information from job seeker queries.
 
-CRITICAL INSTRUCTIONS:
-1. Always respond with valid JSON only - no explanations or additional text
-2. Extract all relevant job-related information from the user's query
-3. Use null for missing information, don't make assumptions
-4. Infer missing details intelligently from context
+CRITICAL REQUIREMENTS:
+1. Respond ONLY with valid JSON - no text before or after
+2. Include ALL fields even if null
+3. Be thorough in extraction
+4. Infer reasonable defaults when appropriate
 
-JOBSEEKER REQUIREMENTS TO EXTRACT:
-- role: Job title/position (string)
-- skills: Technical skills mentioned (array of strings)
-- experience: Experience level - "entry", "mid", "senior", or "lead" (string)
-- location: Preferred work location or "remote" (string)
-- salary: Expected salary range or amount (string)
-- work_preference: "remote", "onsite", "hybrid", or null (string)
-- job_type: "full-time", "part-time", "contract", "internship", or null (string)
-- industry: Target industry if mentioned (string)
-- platform: Job search platform preference if mentioned (string)
+EXTRACT THESE FIELDS:
+- role: Job title/position (extract even partial matches)
+- skills: ALL technical skills mentioned (programming languages, frameworks, tools)
+- experience: Map to "entry" (0-2 years), "mid" (3-5 years), "senior" (6+ years), "lead" (10+ years)
+- location: City/state or "remote"
+- salary: Any salary/pay mention (keep original format)
+- work_preference: "remote", "onsite", "hybrid" or null
+- job_type: "full-time", "part-time", "contract", "internship" or null  
+- industry: Business sector if mentioned
+- platform: Job site preference if mentioned
 
-RESPONSE FORMAT (JSON):
+REQUIRED JSON STRUCTURE:
 {
-    "role": "Software Developer",
-    "skills": ["Python", "Django", "React"],
-    "experience": "mid",
-    "location": "Bangalore",
-    "salary": "8-12 LPA",
-    "work_preference": "hybrid",
-    "job_type": "full-time",
-    "industry": "fintech",
-    "platform": "naukri"
+    "role": "string or null",
+    "skills": ["array", "of", "strings"],
+    "experience": "entry|mid|senior|lead",
+    "location": "string or null",
+    "salary": "string or null",
+    "work_preference": "string or null",
+    "job_type": "string or null",
+    "industry": "string or null",
+    "platform": "string or null"
 }
 
 EXAMPLES:
-Query: "I want a Python developer job in Bangalore with 3 years experience, Django skills, full-time, 8-12 LPA salary"
-Response: {
+Input: "I want Python developer job in Mumbai with 4 years experience"
+Output: {
     "role": "Python Developer",
-    "skills": ["Python", "Django"],
+    "skills": ["Python"],
     "experience": "mid",
-    "location": "Bangalore",
-    "salary": "8-12 LPA",
+    "location": "Mumbai",
+    "salary": null,
     "work_preference": null,
-    "job_type": "full-time",
+    "job_type": null,
     "industry": null,
     "platform": null
 }
 
-Query: "Looking for remote React developer position with Redux skills, hybrid work, startup environment"
-Response: {
-    "role": "React Developer",
-    "skills": ["React", "Redux"],
-    "experience": "entry",
+Input: "Looking for remote React frontend role with Redux, TypeScript, 6+ years, fintech, full-time, 15-20 LPA"
+Output: {
+    "role": "Frontend Developer",
+    "skills": ["React", "Redux", "TypeScript"],
+    "experience": "senior",
     "location": "remote",
-    "salary": null,
-    "work_preference": "hybrid",
-    "job_type": null,
-    "industry": "startup",
+    "salary": "15-20 LPA",
+    "work_preference": "remote",
+    "job_type": "full-time",
+    "industry": "fintech",
     "platform": null
 }"""
 
     elif query_type == "recruiter":
-        system_msg = """You are an expert AI assistant specializing in recruitment analysis. Your task is to extract structured information from recruiter queries with high accuracy.
+        system_msg = """You are an expert recruitment analyzer. Extract candidate requirements from recruiter queries.
 
-CRITICAL INSTRUCTIONS:
-1. Always respond with valid JSON only - no explanations or additional text
-2. Extract all relevant candidate requirements from the recruiter's query
-3. Use null for missing information, don't make assumptions
+CRITICAL REQUIREMENTS:
+1. Respond ONLY with valid JSON - no text before or after
+2. Include ALL fields even if null
+3. Focus on what recruiters are looking for
 
-RECRUITER REQUIREMENTS TO EXTRACT:
-- role: Target job title/position they're hiring for (string)
-- experience: Required experience level - "entry", "mid", "senior", or "lead" (string)
-- location: Preferred candidate location (string)
-- skills: Required technical skills (array of strings)
+EXTRACT THESE FIELDS:
+- role: Position they're hiring for
+- experience: Required experience level
+- location: Candidate location requirement
+- skills: Required technical skills
 
-RESPONSE FORMAT (JSON):
+REQUIRED JSON STRUCTURE:
 {
-    "role": "React Developer",
-    "experience": "senior",
-    "location": "Mumbai",
-    "skills": ["React", "Redux", "JavaScript"]
+    "role": "string or null",
+    "skills": ["array", "of", "strings"],
+    "experience": "entry|mid|senior|lead or null",
+    "location": "string or null"
 }
 
 EXAMPLES:
-Query: "We need a senior React developer with Redux experience in Mumbai"
-Response: {
+Input: "We need senior React developer with 6+ years experience in Bangalore"
+Output: {
     "role": "React Developer",
+    "skills": ["React"],
     "experience": "senior",
-    "location": "Mumbai",
-    "skills": ["React", "Redux"]
-}
-
-Query: "Looking for Python data scientist with ML and TensorFlow experience, remote OK"
-Response: {
-    "role": "Data Scientist",
-    "experience": null,
-    "location": "remote",
-    "skills": ["Python", "Machine Learning", "TensorFlow"]
+    "location": "Bangalore"
 }"""
 
     else:  # salary prediction
-        system_msg = """You are an expert AI assistant specializing in salary analysis. Your task is to extract structured information for salary prediction with high accuracy.
+        system_msg = """You are an expert salary analyzer. Extract information needed for salary prediction.
 
-CRITICAL INSTRUCTIONS:
-1. Always respond with valid JSON only - no explanations or additional text
-2. Extract role, experience, location, and skills for accurate salary prediction
-3. Use null for missing information, don't make assumptions
+CRITICAL REQUIREMENTS:
+1. Respond ONLY with valid JSON - no text before or after
+2. Include ALL fields even if null
+3. Focus on salary-relevant information
 
-SALARY PREDICTION REQUIREMENTS TO EXTRACT:
-- role: Job title/position (string)
-- experience: Experience level - "entry", "mid", "senior", or "lead" (string)
-- location: Work location (string)
-- skills: Technical skills mentioned (array of strings)
+EXTRACT THESE FIELDS:
+- role: Job title/position
+- experience: Experience level for salary calculation  
+- location: Work location affecting salary
+- skills: Technical skills that impact salary
 
-RESPONSE FORMAT (JSON):
+REQUIRED JSON STRUCTURE:
 {
-    "role": "Software Engineer",
-    "experience": "mid",
-    "location": "Bangalore",
-    "skills": ["Python", "React", "Node.js"]
-}
-
-EXAMPLES:
-Query: "What's the salary for a senior Python developer with Django skills in Mumbai?"
-Response: {
-    "role": "Python Developer",
-    "experience": "senior",
-    "location": "Mumbai",
-    "skills": ["Python", "Django"]
-}
-
-Query: "Expected salary for ML engineer with 2 years experience in Pune"
-Response: {
-    "role": "ML Engineer",
-    "experience": "mid",
-    "location": "Pune",
-    "skills": ["Machine Learning"]
+    "role": "string or null",
+    "skills": ["array", "of", "strings"],
+    "experience": "entry|mid|senior|lead",
+    "location": "string or null"
 }"""
 
     try:
-        # Make API call to Azure OpenAI
+        print(f"🤖 Sending query to GPT-4.1-mini...")
+        print(f"Query: {prompt}")
+        
+        # Make API call with more specific parameters
         response = client.chat.completions.create(
             model=deployment,
             messages=[
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": f"Extract structured information from this query: {prompt}"}
             ],
-            temperature=0.1,
-            max_tokens=1000,
-            top_p=0.95
+            temperature=0.1,  # Low temperature for consistent output
+            max_tokens=1500,
+            top_p=0.9,
+            frequency_penalty=0,
+            presence_penalty=0
         )
         
         # Extract response content
@@ -248,10 +290,16 @@ Response: {
         
         if error:
             print(f"❌ JSON validation error: {error}")
+            print(f"❌ Problematic content: {content}")
             return get_fallback_response(query_type)
         
+        # Normalize the parsed data
+        normalized_data = normalize_parsed_data(parsed_data, query_type)
+        
         print(f"✅ Successfully parsed query as {query_type}")
-        return parsed_data
+        print(f"✅ Normalized result: {json.dumps(normalized_data, indent=2)}")
+        
+        return normalized_data
         
     except Exception as e:
         print(f"❌ API call failed: {e}")
@@ -265,12 +313,13 @@ def determine_query_type(prompt: str) -> str:
     recruiter_keywords = [
         "we need", "we are looking", "hiring", "recruit", "candidate", 
         "we want", "our company", "we require", "position available",
-        "job opening", "vacancy"
+        "job opening", "vacancy", "looking for candidates", "need someone"
     ]
     
     salary_keywords = [
         "salary", "pay", "compensation", "how much", "expected salary",
-        "salary range", "pay scale", "earnings", "income"
+        "salary range", "pay scale", "earnings", "income", "what should i expect",
+        "market rate", "typical salary"
     ]
     
     # Check for recruiter queries
@@ -279,34 +328,73 @@ def determine_query_type(prompt: str) -> str:
     
     # Check for salary prediction queries
     if any(keyword in prompt_lower for keyword in salary_keywords):
-        return "salary_prediction"
+        return "salary"
     
     # Default to jobseeker
     return "jobseeker"
 
 def process_query(prompt: str) -> dict:
-    """Main function to process any type of query"""
-    query_type = determine_query_type(prompt)
-    print(f"🎯 Detected query type: {query_type}")
+    """Main function to process any type of query with enhanced error handling"""
+    try:
+        query_type = determine_query_type(prompt)
+        print(f"🎯 Detected query type: {query_type}")
+        
+        result = parse_prompt_gpt(prompt, query_type)
+        result["query_type"] = query_type
+        
+        return result
+        
+    except Exception as e:
+        print(f"❌ Error in process_query: {e}")
+        return {
+            **get_fallback_response("jobseeker"),
+            "query_type": "jobseeker",
+            "error": str(e)
+        }
+
+def extract_skills_fallback(prompt: str) -> list:
+    """Fallback skill extraction using regex patterns"""
+    skills = []
     
-    result = parse_prompt_gpt(prompt, query_type)
-    result["query_type"] = query_type
+    # Common programming languages and technologies
+    tech_patterns = [
+        r'\b(python|java|javascript|js|react|angular|vue|node\.?js|express)\b',
+        r'\b(html|css|sql|mongodb|mysql|postgresql|redis|docker|kubernetes)\b',
+        r'\b(aws|azure|gcp|git|django|flask|spring|laravel|php)\b',
+        r'\b(machine learning|ml|ai|data science|tensorflow|pytorch)\b',
+        r'\b(devops|ci/cd|jenkins|ansible|terraform)\b'
+    ]
     
-    return result
+    prompt_lower = prompt.lower()
+    for pattern in tech_patterns:
+        matches = re.findall(pattern, prompt_lower)
+        skills.extend([match.title() for match in matches])
+    
+    return list(set(skills))  # Remove duplicates
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Test cases
+    # Comprehensive test cases
     test_queries = [
-        "I want a Python developer job in Bangalore with 3 years experience",
-        "We need a senior React developer with Redux experience in Mumbai",
-        "What's the salary for a data scientist with 5 years experience in Pune?",
-        "Looking for remote full-stack developer position with MERN stack skills"
+        "I want a Python developer job in Bangalore with 3 years experience, Django and React skills, full-time, 8-12 LPA",
+        "Looking for remote React developer position with Redux, TypeScript skills, hybrid work, fintech industry",
+        "We need a senior full-stack developer with MERN stack experience in Mumbai, 6+ years",
+        "What's the salary for a data scientist with Python, ML, and 5 years experience in Pune?",
+        "Entry level Java developer position in Hyderabad, part-time, learning Spring Boot",
+        "Senior DevOps engineer with AWS, Docker, Kubernetes skills in Delhi, startup environment",
+        "Frontend developer role with Angular, JavaScript, CSS in Chennai, 2-4 years experience",
+        "Looking for machine learning engineer position with TensorFlow, PyTorch, remote work possible"
     ]
     
-    print("🚀 Testing NLP Parser...")
+    print("🚀 Testing Enhanced NLP Parser...")
+    print("=" * 60)
+    
     for i, query in enumerate(test_queries, 1):
         print(f"\n--- Test {i} ---")
         print(f"Query: {query}")
+        print("-" * 40)
+        
         result = process_query(query)
-        print(f"Result: {json.dumps(result, indent=2)}")
+        print(f"Result:")
+        print(json.dumps(result, indent=2))
+        print("-" * 40)
