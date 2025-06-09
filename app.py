@@ -7,7 +7,7 @@ import apis  # Your API keys here
 
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    st.image("headsin.png", width=250)  # Adjust width as needed, centered by default
+    st.image("\headsin.png", width=250)  # Adjust width as needed, centered by default
 
 # Your original title (it will appear below the logo)
 st.title("Job Search & Candidate Finder App")
