@@ -1,14 +1,9 @@
 import streamlit as st
 import requests
-import os
-from dotenv import load_dotenv
 
-# Load .env variables
-load_dotenv()
-
-# 🔐 API keys
-SEARCH_API_KEY = os.getenv("APOLLO_API_KEY")
-MATCH_API_KEY = os.getenv("APOLLO_PEOPLE_MATCH_API_KEY")
+# 🔐 API keys from Streamlit Secrets
+SEARCH_API_KEY = st.secrets["APOLLO_API_KEY"]
+MATCH_API_KEY = st.secrets["APOLLO_PEOPLE_MATCH_API_KEY"]
 
 # Streamlit layout
 st.set_page_config(page_title="Apollo Candidate Finder", layout="wide")
@@ -38,7 +33,6 @@ def enrich_person(apollo_id):
     if res.status_code == 200:
         return res.json().get("person", {})
     return {}
-
 
 # Main logic
 if submitted:
