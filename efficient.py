@@ -10,10 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Azure OpenAI Setup for GPT-4.1-mini
-endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-api_key = os.getenv("AZURE_OPENAI_API_KEY")
-api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")  # Should be gpt-4.1-mini
+endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
+api_key = st.secrets["AZURE_OPENAI_API_KEY"]
+api_version = st.secrets["AZURE_OPENAI_API_VERSION"]
+deployment = st.secrets["AZURE_OPENAI_DEPLOYMENT"]  # Should be gpt-4.1-mini
 
 # Initialize OpenAI client
 try:
@@ -243,7 +243,7 @@ def fetch_linkedin_profiles(parsed_data):
     params = {
         "engine": "google",
         "q": search_query.strip(),
-        "api_key": os.getenv("SERP_API_KEY"),
+        "api_key": st.secrets["SERP_API_KEY"],
         "hl": "en",  # Changed from "en" to "en-US" for better consistency
         "num": 15  # Increased to get more results
     }
