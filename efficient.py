@@ -10,7 +10,7 @@ from openai import AzureOpenAI
 endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
 api_key = st.secrets["AZURE_OPENAI_API_KEY"]
 api_version = st.secrets["AZURE_OPENAI_API_VERSION"]
-deployment = st.secrets["AZURE_OPENAI_DEPLOYMENT_NAME"] # Should be gpt-4.1-mini
+deployment = "gpt-35-turbo" # Should be gpt-4.1-mini
 
 # Initialize OpenAI client
 try:
