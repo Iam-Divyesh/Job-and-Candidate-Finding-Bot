@@ -1,19 +1,16 @@
 import streamlit as st
 import requests
-import os
 import json
 import re
 from openai import AzureOpenAI
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+
 
 # Azure OpenAI Setup for GPT-4.1-mini
 endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
 api_key = st.secrets["AZURE_OPENAI_API_KEY"]
 api_version = st.secrets["AZURE_OPENAI_API_VERSION"]
-deployment = st.secrets["AZURE_OPENAI_DEPLOYMENT"]  # Should be gpt-4.1-mini
+deployment = st.secrets["AZURE_OPENAI_DEPLOYMENT"] # Should be gpt-4.1-mini
 
 # Initialize OpenAI client
 try:
