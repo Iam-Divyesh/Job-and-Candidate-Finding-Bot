@@ -5,15 +5,21 @@ import json
 import re
 from openai import AzureOpenAI
 from dotenv import load_dotenv
+import time
+from typing import Dict, List, Optional
+import urllib.parse
 
 # Load environment variables
 load_dotenv()
 
-# Azure OpenAI Setup for GPT-3.5-turbo
+# Azure OpenAI Setup - Enhanced for better model
 endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 api_key = os.getenv("AZURE_OPENAI_API_KEY")
-api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")  # Should be gpt-3.5-turbo
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")  # Upgraded to GPT-4
+
+# SERP API Key
+serp_api_key = os.getenv("SERP_API_KEY")
 
 # Initialize OpenAI client
 try:
@@ -22,72 +28,32 @@ except Exception as e:
     st.error(f"Failed to initialize Azure OpenAI client: {e}")
     client = None
 
-# --- Function to parse recruiter query using GPT-3.5-turbo ---
-def parse_recruiter_query(query):
-    if not client:
-        return {"error": "Azure OpenAI client not available"}
+def normalize_location_with_gpt(location: str) -> str:
+    """Use GPT-3.5 to normalize and standardize location names"""
+    if not location or not client:
+        return location.title() if location else ""
     
     try:
-        system_prompt = """You are an expert recruitment assistant that extracts structured information from recruiter queries.
-        
-        Extract the following fields from the recruiter's input and return ONLY a valid JSON object:
-        
-        Fields to extract:
-        - job_title: ONLY the exact position title they're hiring for (e.g., "Python Developer", "Data Scientist"). 
-          DO NOT include phrases like "looking for", "need a", "hiring", etc.
-        - skills: Array of required technical skills mentioned (e.g., ["Python", "Django", "SQL"])
-        - experience: Required experience in years (numeric value or range)
-        - location: ONLY the city, state, or country name (e.g., "Mumbai", "California", "India").
-          DO NOT include additional phrases like "with X years experience" or skill descriptions.
-        - work_preference: Work mode preference - one of: "remote", "onsite", "hybrid", null
-        - job_type: Employment type - one of: "full-time", "part-time", "contract", "internship", null
-        
-        CRITICAL INSTRUCTIONS:
-        1. For job_title, NEVER include phrases like "looking for", "need", "hiring", etc.
-        2. For location, ONLY include the city/state/country name, nothing else.
-        3. Return ONLY valid JSON without any explanation or additional text.
-        4. Use your knowledge to recognize job titles across all industries and domains."""
-        
-        user_prompt = f"""Extract recruitment information from this query: "{query}"
+        system_prompt = """You are a location normalization expert. Your task is to standardize location names to their most common, recognizable form.
 
-        Examples of correct extraction:
+        RULES:
+        1. Convert to standard city names (e.g., "Bombay" → "Mumbai", "Bengaluru" → "Bangalore")
+        2. Handle abbreviations (e.g., "NYC" → "New York", "SF" → "San Francisco")
+        3. Standardize country names (e.g., "USA" → "United States")
+        4. Handle regional variations (e.g., "NCR" → "Delhi", "Silicon Valley" → "San Francisco")
+        5. Return only the normalized location name, nothing else
+        6. If unclear, return the original location with proper capitalization
         
-        Input: "We are looking for a Python developer with 3 years experience from Mumbai"
-        Output: {{"job_title": "Python Developer", "skills": ["Python"], "experience": "3", "location": "Mumbai", "work_preference": null, "job_type": null}}
-
-        Input: "Need a senior React frontend developer with Redux, TypeScript, 5+ years"
-        Output: {{"job_title": "React Frontend Developer", "skills": ["React", "Redux", "TypeScript"], "experience": "5+", "location": null, "work_preference": null, "job_type": null}}
+        Examples:
+        - "bombay" → "Mumbai"
+        - "bengaluru" → "Bangalore"
+        - "nyc" → "New York"
+        - "sf" → "San Francisco"
+        - "ncr" → "Delhi"
+        - "silicon valley" → "San Francisco"
+        """
         
-        Input: "Hiring Java engineers for our Bangalore office, 2-4 years exp required"
-        Output: {{"job_title": "Java Engineer", "skills": ["Java"], "experience": "2-4", "location": "Bangalore", "work_preference": "onsite", "job_type": null}}
-        
-        Input: "Looking for Python developer from Surat with 3 years of experience who have skills like Python Django Flask"
-        Output: {{"job_title": "Python Developer", "skills": ["Python", "Django", "Flask"], "experience": "3", "location": "Surat", "work_preference": null, "job_type": null}}
-
-        Input: "We are looking for a Data Scientist with 2 years of experience from Bangalore"
-        Output: {{"job_title": "Data Scientist", "skills": [], "experience": "2", "location": "Bangalore", "work_preference": null, "job_type": null}}
-
-        Input: "Need Python developer with Django, Flask experience, 3+ years, Mumbai"
-        Output: {{"job_title": "Python Developer", "skills": ["Python", "Django", "Flask"], "experience": "3+", "location": "Mumbai", "work_preference": null, "job_type": null}}
-        
-        Input: "Hiring Java engineer for Pune office, 2-4 years experience"
-        Output: {{"job_title": "Java Engineer", "skills": ["Java"], "experience": "2-4", "location": "Pune", "work_preference": "onsite", "job_type": null}}
-
-        Input: "Remote React developer needed, 5 years experience, Redux, TypeScript"
-        Output: {{"job_title": "React Developer", "skills": ["React", "Redux", "TypeScript"], "experience": "5", "location": null, "work_preference": "remote", "job_type": null}}
-
-        Input: "We are looking for Marketing Manager in Delhi with MBA and 4 years experience"
-        Output: {{"job_title": "Marketing Manager", "skills": ["MBA"], "experience": "4", "location": "Delhi", "work_preference": null, "job_type": null}}
-
-        Input: "Need Graphic Designer with Photoshop, Illustrator skills, 2+ years"
-        Output: {{"job_title": "Graphic Designer", "skills": ["Photoshop", "Illustrator"], "experience": "2+", "location": null, "work_preference": null, "job_type": null}}
-
-        Now extract from the query: "{query}"
-        
-        Remember: 
-        1. Extract ONLY the job title without any prefixes like "looking for", "need", etc.
-        2. Extract ONLY the city/location name without additional text.
-        3. Return ONLY valid JSON."""
+        user_prompt = f"Normalize this location: {location}"
         
         response = client.chat.completions.create(
             model=deployment,
@@ -95,13 +61,97 @@ def parse_recruiter_query(query):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.0,  # Set to 0 for more consistent results
-            max_tokens=500
+            temperature=0.1,
+            max_tokens=50
+        )
+        
+        normalized = response.choices[0].message.content.strip()
+        return normalized if normalized else location.title()
+        
+    except Exception as e:
+        st.warning(f"Location normalization error: {e}")
+        return location.title()
+
+def normalize_location(location: str) -> str:
+    """Normalize location for better matching using GPT-3.5"""
+    if not location:
+        return ""
+    
+    return normalize_location_with_gpt(location)
+
+# --- Enhanced Function to parse recruiter query using GPT-4 ---
+def parse_recruiter_query(query: str) -> Dict:
+    """Enhanced query parsing with better prompting and validation"""
+    if not client:
+        return {"error": "Azure OpenAI client not available"}
+    
+    try:
+        system_prompt = """You are an expert recruitment AI assistant with deep knowledge of job markets, skills, and hiring patterns across industries.
+
+        Your task is to extract structured recruitment information from natural language queries and return a JSON object.
+
+        EXTRACTION RULES:
+        1. job_title: Extract the EXACT position title being hired for
+           - Remove prefixes like "looking for", "hiring", "need"
+           - Standardize common variations (e.g., "full stack developer" → "Full Stack Developer")
+           - Include seniority levels (Junior, Senior, Lead, Principal)
+
+        2. skills: Array of technical skills, tools, and technologies
+           - Include programming languages, frameworks, tools, certifications
+           - Separate related skills (e.g., ["React", "Node.js"] not ["React/Node.js"])
+           - Include soft skills if specifically mentioned
+
+        3. experience: Experience requirements in standardized format
+           - Convert to consistent format: "2", "3-5", "5+", "10+"
+           - Handle variations like "fresher" → "0", "experienced" → "3+"
+
+        4. location: Normalized city/region name
+           - Extract city, state/region, country
+           - Standardize major city names (Bengaluru → Bangalore)
+           - Handle multiple locations as primary location
+
+        5. work_preference: Work arrangement preference
+           - Options: "remote", "onsite", "hybrid", null
+           - Infer from context (e.g., "WFH" → "remote")
+
+        6. job_type: Employment type
+           - Options: "full-time", "part-time", "contract", "internship", "freelance", null
+
+        7. industry: Industry/domain if mentioned
+           - Examples: "fintech", "healthcare", "e-commerce", "startup"
+
+        8. company_size: Company size preference if mentioned
+           - Options: "startup", "mid-size", "enterprise", "MNC"
+
+        IMPORTANT: Return ONLY valid JSON without explanation."""
+        
+        user_prompt = f"""Extract recruitment information from: "{query}"
+
+        Examples:
+        Input: "Senior Python developer with Django, 5+ years experience, Mumbai, remote work"
+        Output: {{"job_title": "Senior Python Developer", "skills": ["Python", "Django"], "experience": "5+", "location": "Mumbai", "work_preference": "remote", "job_type": null, "industry": null, "company_size": null}}
+
+        Input: "Looking for React frontend engineer in Bangalore startup, 2-4 years, TypeScript, Redux"
+        Output: {{"job_title": "React Frontend Engineer", "skills": ["React", "TypeScript", "Redux"], "experience": "2-4", "location": "Bangalore", "work_preference": null, "job_type": null, "industry": null, "company_size": "startup"}}
+
+        Now extract from: "{query}"
+        
+        Return only the JSON object."""
+        
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,  # Lower temperature for more consistent extraction
+            max_tokens=800,
+            top_p=0.95
         )
         
         content = response.choices[0].message.content.strip()
         
-        # Clean up JSON if needed
+        # Clean JSON response
         if content.startswith('```json'):
             content = content[7:-3]
         elif content.startswith('```'):
@@ -109,68 +159,21 @@ def parse_recruiter_query(query):
         
         content = content.strip()
         
-        # Parse JSON
+        # Parse and validate JSON
         parsed = json.loads(content)
         
-        # Minimal post-processing to ensure clean data
+        # Enhanced data cleaning and validation
         cleaned_result = {
             "job_title": parsed.get("job_title", "").strip() if parsed.get("job_title") else None,
             "skills": [skill.strip() for skill in parsed.get("skills", []) if skill.strip()],
             "experience": str(parsed.get("experience", "")).strip() if parsed.get("experience") else None,
-            "location": parsed.get("location", "").strip() if parsed.get("location") else None,
+            "location": normalize_location(parsed.get("location", "")),
             "work_preference": parsed.get("work_preference"),
             "job_type": parsed.get("job_type"),
+            "industry": parsed.get("industry"),
+            "company_size": parsed.get("company_size"),
             "parsing_status": "success"
         }
-        
-        # If job title still has prefixes, try one more time with a direct request
-        if cleaned_result["job_title"] and any(prefix in cleaned_result["job_title"].lower() for prefix in 
-                                              ["looking for", "need", "hiring", "we are", "searching"]):
-            
-            fix_prompt = f"""The job title "{cleaned_result['job_title']}" still contains prefixes like "looking for", "need", etc.
-            
-            Extract ONLY the actual job position title without any prefixes.
-            
-            For example:
-            - "Looking for Python Developer" → "Python Developer"
-            - "We are hiring Data Scientist" → "Data Scientist"
-            - "Need a Java Engineer" → "Java Engineer"
-            
-            Return ONLY the corrected job title, nothing else."""
-            
-            fix_response = client.chat.completions.create(
-                model=deployment,
-                messages=[{"role": "user", "content": fix_prompt}],
-                temperature=0.0,
-                max_tokens=50
-            )
-            
-            fixed_title = fix_response.choices[0].message.content.strip()
-            if fixed_title:
-                cleaned_result["job_title"] = fixed_title
-        
-        # If location has multiple words, try to extract just the city name
-        if cleaned_result["location"] and len(cleaned_result["location"].split()) > 1:
-            location_prompt = f"""The location "{cleaned_result['location']}" contains multiple words.
-            
-            Extract ONLY the city/state/country name without any additional text.
-            
-            For example:
-            - "Mumbai with 3 years" → "Mumbai"
-            - "Bangalore who knows Python" → "Bangalore"
-            
-            Return ONLY the corrected location name, nothing else."""
-            
-            location_response = client.chat.completions.create(
-                model=deployment,
-                messages=[{"role": "user", "content": location_prompt}],
-                temperature=0.0,
-                max_tokens=50
-            )
-            
-            fixed_location = location_response.choices[0].message.content.strip()
-            if fixed_location:
-                cleaned_result["location"] = fixed_location
         
         return cleaned_result
         
@@ -181,529 +184,854 @@ def parse_recruiter_query(query):
         st.warning(f"AI parsing error: {e}")
         return {"error": f"AI parsing error: {e}"}
 
-# Add this function to detect user location
-def detect_user_location():
-    """Detect user's location using IP geolocation"""
+# --- Enhanced location detection ---
+def detect_user_location() -> Optional[str]:
+    """Enhanced location detection with fallback options"""
     try:
+        # Try primary IP geolocation service
         response = requests.get('https://ipapi.co/json/', timeout=5)
         if response.status_code == 200:
             ip_data = response.json()
             city = ip_data.get('city')
             if city:
-                return city
+                return normalize_location(city)
+        
+        # Fallback to alternative service
+        response = requests.get('http://ip-api.com/json/', timeout=5)
+        if response.status_code == 200:
+            ip_data = response.json()
+            city = ip_data.get('city')
+            if city:
+                return normalize_location(city)
+                
         return None
     except Exception as e:
         st.warning(f"Could not detect location: {e}")
         return None
 
-# --- IMPROVED Function to extract candidate info from LinkedIn profile ---
-def extract_candidate_info(profile_data):
-    """Extract candidate information from LinkedIn profile data with improved parsing"""
-    title = profile_data.get("title", "")
-    snippet = profile_data.get("snippet", "")
-    link = profile_data.get("link", "")
+# --- Enhanced candidate fetching using SERP API ---
+def fetch_candidates_serp(parsed_data: Dict) -> List[Dict]:
+    """Fetch candidates using SERP API with multiple search strategies"""
+    if not serp_api_key:
+        st.error("SERP API key not found. Please set SERP_API_KEY in your environment variables.")
+        return []
     
-    # Initialize candidate info
-    candidate_info = {
-        "name": "Not Available",
-        "image": "https://via.placeholder.com/150x150?text=No+Image",
-        "description": snippet if snippet else "No description available",
-        "experience": "Not specified",
-        "location": "Not specified",
-        "email": "Not available"
-    }
+    job_title = parsed_data.get("job_title", "")
+    location = parsed_data.get("location", "")
+    skills = parsed_data.get("skills", [])
+    experience = parsed_data.get("experience")
+    work_preference = parsed_data.get("work_preference")
+    industry = parsed_data.get("industry")
     
-    # IMPROVED: Extract name from title
-    if title:
-        # Try multiple patterns to extract name
-        name_patterns = [
-            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*[-|]',  # Name before dash or pipe
-            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),',         # Name before comma
-            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(',     # Name before parenthesis
-            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+at\s+',  # Name before "at"
-            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*LinkedIn', # Name before LinkedIn
-        ]
-        
-        for pattern in name_patterns:
-            match = re.search(pattern, title)
-            if match:
-                name = match.group(1).strip()
-                if len(name) > 2 and not any(word in name.lower() for word in ['linkedin', 'profile', 'the', 'and']):
-                    candidate_info["name"] = name
-                    break
-        
-        # If no pattern worked, try simple split
-        if candidate_info["name"] == "Not Available":
-            parts = title.split(" - ")[0].split(" | ")[0].strip()
-            words = parts.split()
-            if len(words) >= 2 and len(words) <= 4:  # Reasonable name length
-                potential_name = " ".join(words[:3])  # Take first 3 words max
-                if not any(word in potential_name.lower() for word in ['linkedin', 'profile', 'developer', 'engineer', 'manager']):
-                    candidate_info["name"] = potential_name
+    # Build comprehensive search queries
+    search_queries = build_search_queries(parsed_data)
     
-    # IMPROVED: Extract experience with better patterns
-    combined_text = f"{title} {snippet}".lower()
+    all_candidates = []
     
-    exp_patterns = [
-        r'(\d+)\+\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
-        r'(\d+)\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
-        r'(\d+)\s*-\s*(\d+)\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
-        r'(\d+)\s*to\s*(\d+)\s*(?:years?|yrs?)',
-        r'over\s*(\d+)\s*(?:years?|yrs?)',
-        r'more\s*than\s*(\d+)\s*(?:years?|yrs?)',
-        r'(\d+)\+\s*(?:years?|yrs?)',
-        r'(\d+)\s*(?:years?|yrs?)',
-    ]
+    for i, query in enumerate(search_queries[:3]):  # Limit to 3 searches to avoid API limits
+        st.info(f"🔍 Search {i+1}/3: {query}")
+        candidates = perform_serp_search(query, location, work_preference)
+        all_candidates.extend(candidates)
+        time.sleep(1)  # Rate limiting
     
-    for pattern in exp_patterns:
-        match = re.search(pattern, combined_text)
-        if match:
-            if len(match.groups()) == 2:  # Range pattern
-                candidate_info["experience"] = f"{match.group(1)}-{match.group(2)} years"
-            else:
-                years = match.group(1)
-                if '+' in pattern:
-                    candidate_info["experience"] = f"{years}+ years"
-                else:
-                    candidate_info["experience"] = f"{years} years"
-            break
+    # Remove duplicates and enhance candidate data
+    unique_candidates = remove_duplicates(all_candidates)
+    enhanced_candidates = enhance_candidate_data(unique_candidates, parsed_data)
     
-    # IMPROVED: Extract location with better patterns and filtering
-    # Define common Indian cities and international locations
-    known_cities = [
-        'mumbai', 'delhi', 'bangalore', 'bengaluru', 'pune', 'chennai', 'kolkata', 'hyderabad',
-        'ahmedabad', 'surat', 'jaipur', 'lucknow', 'kanpur', 'nagpur', 'indore', 'thane',
-        'bhopal', 'visakhapatnam', 'pimpri', 'patna', 'vadodara', 'ghaziabad', 'ludhiana',
-        'agra', 'nashik', 'faridabad', 'meerut', 'rajkot', 'kalyan', 'vasai', 'varanasi',
-        'srinagar', 'dhanbad', 'jodhpur', 'amritsar', 'raipur', 'allahabad', 'coimbatore',
-        'jabalpur', 'gwalior', 'vijayawada', 'madurai', 'guwahati', 'chandigarh', 'hubli',
-        'mysore', 'tiruchirappalli', 'bareilly', 'aligarh', 'tiruppur', 'gurgaon', 'salem',
-        'mira', 'bhiwandi', 'saharanpur', 'gorakhpur', 'bikaner', 'amravati', 'noida',
-        'jamshedpur', 'bhilai', 'cuttack', 'firozabad', 'kochi', 'nellore', 'bhavnagar',
-        'dehradun', 'durgapur', 'asansol', 'rourkela', 'nanded', 'kolhapur', 'ajmer',
-        'akola', 'gulbarga', 'jamnagar', 'ujjain', 'loni', 'siliguri', 'jhansi',
-        'ulhasnagar', 'jammu', 'sangli', 'mangalore', 'erode', 'belgaum', 'ambattur',
-        'tirunelveli', 'malegaon', 'gaya', 'jalgaon', 'udaipur', 'maheshtala',
-        # International cities
-        'london', 'new york', 'san francisco', 'toronto', 'vancouver', 'sydney', 'melbourne',
-        'singapore', 'dubai', 'tokyo', 'berlin', 'paris', 'amsterdam', 'zurich', 'stockholm'
-    ]
-    
-    # Skip these words that are often mistaken for locations
-    skip_words = [
-        'mongodb', 'mongo', 'mysql', 'postgresql', 'oracle', 'redis', 'cassandra',
-        'python', 'java', 'javascript', 'react', 'angular', 'node', 'django', 'flask',
-        'spring', 'hibernate', 'docker', 'kubernetes', 'aws', 'azure', 'gcp',
-        'linkedin', 'profile', 'experience', 'years', 'developer', 'engineer', 'manager',
-        'senior', 'junior', 'lead', 'team', 'software', 'web', 'mobile', 'full',
-        'stack', 'front', 'back', 'end', 'data', 'machine', 'learning', 'artificial',
-        'intelligence', 'devops', 'cloud', 'security', 'database', 'analyst', 'scientist'
-    ]
-    
-    location_patterns = [
-        r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*,\s*India\b',
-        r'\bfrom\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
-        r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
-        r'\bat\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
-        r'\bbased\s+in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
-        r'\blocation:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
-        r'·\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*·',
-        r'\|+\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\|+',
-    ]
-    
-    for pattern in location_patterns:
-        matches = re.findall(pattern, combined_text, re.IGNORECASE)
-        for match in matches:
-            location = match.strip().lower()
-            # Check if it's a known city and not a technology/skill
-            if (location in known_cities or 
-                any(city in location for city in known_cities)) and \
-               location not in skip_words and \
-               not any(skip in location for skip in skip_words):
-                candidate_info["location"] = match.strip().title()
-                break
-        if candidate_info["location"] != "Not specified":
-            break
-    
-    # IMPROVED: Try to extract profile image from LinkedIn
-    # LinkedIn profile images are not directly accessible through search results
-    # But we can try to construct a generic LinkedIn avatar or use a professional placeholder
-    if 'linkedin.com' in link:
-        # Use a professional avatar placeholder
-        candidate_info["image"] = "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png"
-    
-    # IMPROVED: Email extraction (though rare in public LinkedIn profiles)
-    # Most LinkedIn profiles don't show emails publicly, but let's try
-    email_patterns = [
-        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-        r'email:\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})',
-        r'contact:\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})',
-    ]
-    
-    for pattern in email_patterns:
-        match = re.search(pattern, combined_text, re.IGNORECASE)
-        if match:
-            email = match.group(1) if len(match.groups()) > 0 else match.group(0)
-            # Validate email format
-            if '@' in email and '.' in email.split('@')[1]:
-                candidate_info["email"] = email
-                break
-    
-    # If no email found, provide alternative contact method
-    if candidate_info["email"] == "Not available" and 'linkedin.com' in link:
-        candidate_info["email"] = "Contact via LinkedIn"
-    
-    return candidate_info
+    return enhanced_candidates
 
-# --- Function to fetch LinkedIn profiles via SerpApi ---
-def fetch_linkedin_profiles(parsed_data):
+def build_search_queries(parsed_data: Dict) -> List[str]:
+    """Build multiple targeted search queries"""
     job_title = parsed_data.get("job_title", "")
     location = parsed_data.get("location", "")
     skills = parsed_data.get("skills", [])
     experience = parsed_data.get("experience")
     work_preference = parsed_data.get("work_preference")
     
-    # Build search query
-    search_query = "site:linkedin.com/in "
+    queries = []
     
-    if job_title:
-        search_query += f'"{job_title}" '
-    
-    # If work preference is remote and no location specified, use user's location
-    if work_preference == "remote" and not location:
-        user_location = detect_user_location()
-        if user_location:
-            location = user_location
-            st.info(f"📍 Using your location ({location}) to find remote candidates nearby")
-    
+    # Query 1: LinkedIn focused search
+    linkedin_query = f'site:linkedin.com/in "{job_title}"'
     if location:
-        search_query += f'"{location}" '
+        linkedin_query += f' "{location}"'
+    if skills:
+        linkedin_query += f' {" ".join(skills[:2])}'
+    queries.append(linkedin_query)
     
-    # Add top 3 skills to search query
-    if skills and len(skills) > 0:
-        for skill in skills[:3]:
-            search_query += f'"{skill}" '
-    
-    # Add experience to search query if available
+    # Query 2: General professional profile search
+    general_query = f'"{job_title}" resume CV'
+    if location:
+        general_query += f' "{location}"'
     if experience:
-        if '+' in str(experience):
-            exp_num = str(experience).replace('+', '')
-            search_query += f'"{exp_num} years" OR "{exp_num}+ years" '
-        elif '-' in str(experience):
-            search_query += f'"{experience} years" '
-        else:
-            search_query += f'"{experience} years" '
+        general_query += f' "{experience} years"'
+    queries.append(general_query)
     
-    # Add work preference if specified
-    if work_preference:
-        search_query += f'"{work_preference}" '
+    # Query 3: Skills-focused search
+    if skills:
+        skills_query = f'{" ".join(skills[:3])} developer engineer'
+        if location:
+            skills_query += f' "{location}"'
+        if work_preference == "remote":
+            skills_query += ' remote'
+        queries.append(skills_query)
     
-    # SerpAPI parameters
-    params = {
-        "engine": "google",
-        "q": search_query.strip(),
-        "api_key": os.getenv("SERP_API_KEY"),
-        "hl": "en",
-        "num": 15
-    }
+    # Query 4: Industry-specific search
+    if parsed_data.get("industry"):
+        industry_query = f'"{job_title}" {parsed_data["industry"]}'
+        if location:
+            industry_query += f' "{location}"'
+        queries.append(industry_query)
     
+    return queries
+
+def perform_serp_search(query: str, location: str, work_preference: str) -> List[Dict]:
+    """Perform actual SERP API search"""
     try:
-        response = requests.get("https://serpapi.com/search", params=params)
+        params = {
+            'api_key': serp_api_key,
+            'engine': 'google',
+            'q': query,
+            'num': 20,  # Increased results
+            'gl': get_country_code(location),  # Geographic location
+            'hl': 'en'
+        }
+        
+        # Add location-specific parameters
+        if location:
+            params['location'] = location
+        
+        response = requests.get('https://serpapi.com/search', params=params, timeout=30)
+        
         if response.status_code == 200:
-            results = response.json().get("organic_results", [])
+            data = response.json()
+            organic_results = data.get('organic_results', [])
             
-            # Post-process results to fix LinkedIn URLs
-            for result in results:
-                if result.get("link") and "in.linkedin.com" in result["link"]:
-                    result["link"] = result["link"].replace("in.linkedin.com", "linkedin.com")
-                
-                # Extract candidate information
-                result["candidate_info"] = extract_candidate_info(result)
+            candidates = []
+            for result in organic_results:
+                candidate = process_serp_result(result, location, work_preference)
+                if candidate:
+                    candidates.append(candidate)
             
-            return results
+            return candidates
         else:
-            st.error(f"API Error {response.status_code}: {response.text}")
+            st.warning(f"SERP API Error {response.status_code}: {response.text}")
             return []
+            
     except Exception as e:
-        st.error(f"Error fetching profiles: {e}")
+        st.error(f"Error fetching from SERP API: {e}")
         return []
 
-# --- Function to score profiles by keyword relevance ---
-def score_profile(profile, parsed_data):
-    content = (profile.get("title", "") + " " + profile.get("snippet", "")).lower()
+def get_country_code(location: str) -> str:
+    """Get country code for SERP API geographic targeting using GPT-3.5"""
+    if not location or not client:
+        return 'us'
+    
+    try:
+        system_prompt = """You are a geographic expert. Given a location name, return the ISO 2-letter country code.
+
+        Examples:
+        - "Mumbai" → "in"
+        - "New York" → "us"
+        - "London" → "uk"
+        - "Singapore" → "sg"
+        - "Dubai" → "ae"
+        - "Toronto" → "ca"
+        - "Sydney" → "au"
+        
+        Return only the 2-letter country code, nothing else."""
+        
+        user_prompt = f"What is the country code for: {location}"
+        
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=10
+        )
+        
+        country_code = response.choices[0].message.content.strip().lower()
+        
+        # Validate country code format
+        if len(country_code) == 2 and country_code.isalpha():
+            return country_code
+        
+        return 'us'  # Default fallback
+        
+    except Exception as e:
+        st.warning(f"Country code detection error: {e}")
+        return 'us'
+
+def process_serp_result(result: Dict, target_location: str, work_preference: str) -> Optional[Dict]:
+    """Process individual SERP search result into candidate data"""
+    try:
+        title = result.get('title', '')
+        link = result.get('link', '')
+        snippet = result.get('snippet', '')
+        
+        # Skip irrelevant results
+        if not is_relevant_profile(title, link, snippet):
+            return None
+        
+        # Extract candidate information
+        candidate = {
+            'name': extract_name_from_title(title),
+            'title': title,
+            'link': link,
+            'snippet': snippet,
+            'description': snippet[:300] + "..." if len(snippet) > 300 else snippet,
+            'source': get_source_type(link),
+            'location': extract_location_from_snippet(snippet, target_location),
+            'skills': extract_skills_from_text(f"{title} {snippet}"),
+            'experience': extract_experience_from_text(snippet),
+            'linkedin_profile': link if 'linkedin.com' in link else "Not Available",
+            'open_to_work': 'open to work' in snippet.lower() or 'looking for' in snippet.lower(),
+            'remote_friendly': work_preference == 'remote' and ('remote' in snippet.lower() or 'work from home' in snippet.lower()),
+            'image': get_default_image()
+        }
+        
+        return candidate
+        
+    except Exception as e:
+        st.warning(f"Error processing search result: {e}")
+        return None
+
+def is_relevant_profile(title: str, link: str, snippet: str) -> bool:
+    """Check if search result is a relevant candidate profile"""
+    # Check for professional profile indicators
+    profile_indicators = [
+        'linkedin.com/in',
+        'resume',
+        'cv',
+        'profile',
+        'developer',
+        'engineer',
+        'manager',
+        'analyst',
+        'consultant'
+    ]
+    
+    combined_text = f"{title} {link} {snippet}".lower()
+    
+    # Must have at least one profile indicator
+    if not any(indicator in combined_text for indicator in profile_indicators):
+        return False
+    
+    # Exclude job postings and company pages
+    exclude_patterns = [
+        'jobs',
+        'careers',
+        'hiring',
+        'vacancy',
+        'openings',
+        'company',
+        'about us'
+    ]
+    
+    if any(pattern in combined_text for pattern in exclude_patterns):
+        return False
+    
+    return True
+
+def extract_name_from_title(title: str) -> str:
+    """Extract candidate name from search result title"""
+    # LinkedIn profiles often have "Name | Title" format
+    if ' | ' in title:
+        potential_name = title.split(' | ')[0].strip()
+        # Check if it looks like a name (contains spaces, reasonable length)
+        if len(potential_name.split()) >= 2 and len(potential_name) <= 50:
+            return potential_name
+    
+    # Look for name patterns in title
+    import re
+    name_pattern = r'^([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+    match = re.match(name_pattern, title)
+    if match:
+        return match.group(1)
+    
+    return "Name Not Available"
+
+def extract_location_from_snippet(snippet: str, target_location: str) -> str:
+    """Extract location information from snippet using GPT-3.5"""
+    if not client:
+        return "Location Not Specified"
+    
+    try:
+        system_prompt = """You are a location extraction expert. Extract the most relevant location from the given text.
+
+        Rules:
+        1. Look for city names, regions, or countries
+        2. Prefer specific cities over general regions
+        3. Return only the location name, nothing else
+        4. If no clear location found, return "Location Not Specified"
+        5. Standardize common variations (e.g., "NYC" → "New York")
+        
+        Examples:
+        - "Based in Mumbai, India" → "Mumbai"
+        - "Working remotely from Bangalore" → "Bangalore"
+        - "Located in San Francisco Bay Area" → "San Francisco"
+        """
+        
+        user_prompt = f"Extract location from: {snippet}"
+        
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=50
+        )
+        
+        location = response.choices[0].message.content.strip()
+        
+        if location and location != "Location Not Specified":
+            return normalize_location(location)
+        
+        return "Location Not Specified"
+        
+    except Exception as e:
+        st.warning(f"Location extraction error: {e}")
+        return "Location Not Specified"
+
+def extract_skills_from_text(text: str) -> List[str]:
+    """Extract technical skills from text"""
+    # Common technical skills
+    skill_patterns = [
+        r'\b(?:Python|Java|JavaScript|React|Node\.js|Angular|Vue|PHP|Ruby|Go|Rust|C\+\+|C#|Swift|Kotlin)\b',
+        r'\b(?:AWS|Azure|GCP|Docker|Kubernetes|MongoDB|PostgreSQL|MySQL|Redis)\b',
+        r'\b(?:Machine Learning|ML|AI|Data Science|Deep Learning|TensorFlow|PyTorch)\b',
+        r'\b(?:DevOps|CI/CD|Jenkins|Git|Linux|Unix|Bash)\b'
+    ]
+    
+    skills = []
+    for pattern in skill_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        skills.extend(matches)
+    
+    return list(set(skills))  # Remove duplicates
+
+def extract_experience_from_text(text: str) -> str:
+    """Extract experience information from text"""
+    exp_patterns = [
+        r'(\d+)\+?\s*years?\s*(?:of\s*)?experience',
+        r'(\d+-\d+)\s*years?\s*(?:of\s*)?experience',
+        r'over\s*(\d+)\s*years?',
+        r'(\d+)\s*yrs?'
+    ]
+    
+    for pattern in exp_patterns:
+        matches = re.findall(pattern, text.lower())
+        if matches:
+            return matches[0] + " years"
+    
+    return "Not Specified"
+
+def get_source_type(link: str) -> str:
+    """Determine the source type of the profile"""
+    if 'linkedin.com' in link:
+        return 'LinkedIn'
+    elif 'github.com' in link:
+        return 'GitHub'
+    elif any(domain in link for domain in ['resume', 'cv', 'portfolio']):
+        return 'Portfolio'
+    else:
+        return 'Web Profile'
+
+def get_default_image() -> str:
+    """Return default profile image URL"""
+    return "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png"
+
+def remove_duplicates(candidates: List[Dict]) -> List[Dict]:
+    """Remove duplicate candidates based on name and link"""
+    seen = set()
+    unique_candidates = []
+    
+    for candidate in candidates:
+        identifier = (candidate.get('name', ''), candidate.get('link', ''))
+        if identifier not in seen:
+            seen.add(identifier)
+            unique_candidates.append(candidate)
+    
+    return unique_candidates
+
+def enhance_candidate_data(candidates: List[Dict], parsed_data: Dict) -> List[Dict]:
+    """Enhance candidate data with additional processing"""
+    enhanced = []
+    
+    for candidate in candidates:
+        # Add email extraction if available
+        candidate['email'] = extract_email_from_snippet(candidate.get('snippet', ''))
+        
+        # Add phone extraction if available
+        candidate['phone'] = extract_phone_from_snippet(candidate.get('snippet', ''))
+        
+        # Enhance location matching
+        if not candidate.get('location') or candidate['location'] == "Location Not Specified":
+            candidate['location'] = detect_location_from_context(candidate, parsed_data.get('location'))
+        
+        enhanced.append(candidate)
+    
+    return enhanced
+
+def extract_email_from_snippet(snippet: str) -> str:
+    """Extract email from snippet if available"""
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    matches = re.findall(email_pattern, snippet)
+    return matches[0] if matches else "Not Available"
+
+def extract_phone_from_snippet(snippet: str) -> str:
+    """Extract phone number from snippet if available"""
+    phone_patterns = [
+        r'\+\d{1,3}\s*\d{10}',
+        r'\(\d{3}\)\s*\d{3}-\d{4}',
+        r'\d{10}'
+    ]
+    
+    for pattern in phone_patterns:
+        matches = re.findall(pattern, snippet)
+        if matches:
+            return matches[0]
+    
+    return "Not Available"
+
+def detect_location_from_context(candidate: Dict, target_location: str) -> str:
+    """Detect location from candidate context"""
+    # Check if LinkedIn profile contains location
+    if candidate.get('source') == 'LinkedIn' and target_location:
+        return target_location
+    
+    return candidate.get('location', "Location Not Specified")
+
+# --- Enhanced scoring system ---
+def score_candidate(candidate: Dict, parsed_data: Dict) -> int:
+    """Enhanced candidate scoring algorithm"""
     score = 0
     
-    # Score based on job title match
-    if parsed_data.get("job_title"):
-        job_title = parsed_data["job_title"].lower()
-        if job_title in content:
-            score += 6
-        # Partial match for job title
-        title_words = job_title.split()
-        for word in title_words:
-            if len(word) > 2 and word in content:
-                score += 2
+    # Get candidate text for analysis
+    candidate_text = f"{candidate.get('title', '')} {candidate.get('snippet', '')}".lower()
     
-    # Score based on skills match
-    if parsed_data.get("skills"):
-        for skill in parsed_data["skills"]:
-            if skill.lower() in content:
-                score += 3
+    # Job title match (weight: 8-12 points)
+    job_title = parsed_data.get("job_title", "").lower()
+    if job_title:
+        if job_title in candidate_text:
+            score += 12
+        else:
+            # Partial match for job title keywords
+            title_words = job_title.split()
+            matches = sum(1 for word in title_words if len(word) > 2 and word in candidate_text)
+            score += matches * 3
     
-    # Score based on location match
-    if parsed_data.get("location") and parsed_data["location"].lower() in content:
+    # Skills match (weight: 4 points per skill)
+    skills = parsed_data.get("skills", [])
+    matched_skills = 0
+    for skill in skills:
+        if skill.lower() in candidate_text:
+            matched_skills += 1
+            score += 4
+    
+    # Skills bonus for multiple matches
+    if matched_skills >= 3:
+        score += 5
+    
+    # Location match (weight: 8 points)
+    target_location = parsed_data.get("location", "").lower()
+    candidate_location = candidate.get("location", "").lower()
+    if target_location and target_location in candidate_location:
+        score += 8
+    elif target_location and candidate_location and candidate_location in target_location:
+        score += 6
+    
+    # Experience match (weight: 5 points)
+    target_exp = parsed_data.get("experience")
+    candidate_exp = candidate.get("experience", "")
+    if target_exp and candidate_exp and target_exp in candidate_exp:
+        score += 5
+    
+    # Work preference match (weight: 4 points)
+    work_pref = parsed_data.get("work_preference")
+    if work_pref == "remote" and candidate.get("remote_friendly"):
         score += 4
     
-    # Score based on experience match
-    if parsed_data.get("experience"):
-        exp = str(parsed_data["experience"])
-        exp_clean = exp.replace("+", "")
-        exp_range = exp.replace("-", r"\s*-\s*")
-        
-        exp_patterns = [
-            exp_clean + r'\s*(?:\+)?\s*(?:years?|yrs?)',
-            exp_range + r'\s*(?:years?|yrs?)'
-        ]
-        
-        for pattern in exp_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                score += 3
-                break
+    # Source quality bonus
+    source = candidate.get("source", "")
+    if source == "LinkedIn":
+        score += 6
+    elif source == "GitHub":
+        score += 4
+    elif source == "Portfolio":
+        score += 3
     
-    # Score based on work preference match
-    if parsed_data.get("work_preference") and parsed_data["work_preference"].lower() in content:
+    # Open to work bonus
+    if candidate.get("open_to_work"):
+        score += 5
+    
+    # Contact information bonus
+    if candidate.get("email") and candidate["email"] != "Not Available":
+        score += 3
+    if candidate.get("phone") and candidate["phone"] != "Not Available":
         score += 2
     
-    # Score based on job type match
-    if parsed_data.get("job_type") and parsed_data["job_type"].lower() in content:
-        score += 2
-    
-    return score
+    return min(score, 50)  # Cap at 50
 
-# --- Function to get match category based on score ---
-def get_match_category(score):
-    if score >= 15:
+def get_match_category(score: int) -> str:
+    """Enhanced match categorization"""
+    if score >= 35:
         return "🔥 Excellent Match"
-    elif score >= 10:
+    elif score >= 25:
         return "✅ Good Match"
-    elif score >= 6:
+    elif score >= 15:
         return "⚡ Fair Match"
-    else:
+    elif score >= 8:
         return "📋 Basic Match"
+    else:
+        return "🔍 Potential Match"
 
-# --- Function to display candidate card ---
-def display_candidate_card(profile, index):
-    """Display enhanced candidate card with profile information"""
-    candidate = profile["candidate_info"]
-    
+# --- Enhanced candidate display ---
+def display_candidate_card(candidate: Dict, index: int, score: int, match_category: str):
+    """Enhanced candidate card display"""
     with st.container():
-        # Create card-like appearance
-        st.markdown("""
-        <style>
-        .candidate-card {
-            border: 1px solid #e0e0e0;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 10px 0;
-            background-color: #f9f9f9;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        col1, col2, col3 = st.columns([1, 3, 1])
+        # Header with score
+        col1, col2, col3 = st.columns([2, 1, 1])
         
         with col1:
-            # Profile image
-            st.image(candidate["image"], width=100)
+            st.markdown(f"### {index}. {candidate.get('name', 'Name Not Available')}")
+            st.markdown(f"**{candidate.get('source', 'Unknown')} Profile**")
         
         with col2:
-            # Candidate details
-            st.markdown(f"### {index}. {candidate['name']}")
-            st.markdown(f"**📄 Description:** {candidate['description'][:200]}{'...' if len(candidate['description']) > 200 else ''}")
-            
-            # Create info columns
-            info_col1, info_col2 = st.columns(2)
-            
-            with info_col1:
-                st.markdown(f"**⏱️ Experience:** {candidate['experience']}")
-                st.markdown(f"**📍 Location:** {candidate['location']}")
-            
-            with info_col2:
-                st.markdown(f"**📧 Email:** {candidate['email']}")
-                st.markdown(f"**🔗 Profile:** [View LinkedIn]({profile.get('link', '#')})")
+            st.markdown(f"**{match_category}**")
+            st.progress(min(score / 50, 1.0))
         
         with col3:
-            # Match score and category
-            score = profile["score"]
-            st.markdown(f"**Score: {score}/20**")
-            st.markdown(f"{profile['match_category']}")
-            
-            # Progress bar for visual representation
-            progress_value = min(score / 20, 1.0)
-            st.progress(progress_value)
+            st.markdown(f"**Score: {score}/50**")
+            if candidate.get('open_to_work'):
+                st.success("🚀 Open to Work")
         
-        st.divider()
+        # Profile link
+        if candidate.get('link'):
+            st.markdown(f"[🔗 View Profile]({candidate['link']})")
+        
+        # Description
+        description = candidate.get('description', '')
+        if description:
+            st.markdown(f"**Description:** {description}")
+        
+        # Details in columns
+        detail_col1, detail_col2, detail_col3 = st.columns(3)
+        
+        with detail_col1:
+            location = candidate.get('location', 'Not Specified')
+            st.markdown(f"**📍 Location:** {location}")
+            
+            experience = candidate.get('experience', 'Not Specified')
+            st.markdown(f"**⏱️ Experience:** {experience}")
+        
+        with detail_col2:
+            skills = candidate.get('skills', [])
+            if skills:
+                skills_display = ", ".join(skills[:4])
+                if len(skills) > 4:
+                    skills_display += f" +{len(skills)-4} more"
+                st.markdown(f"**🛠️ Skills:** {skills_display}")
+            
+            if candidate.get('remote_friendly'):
+                st.markdown("**💼 Remote Friendly:** ✅")
+        
+        with detail_col3:
+            email = candidate.get('email', 'Not Available')
+            if email != 'Not Available':
+                st.markdown(f"**📧 Email:** {email}")
+            
+            phone = candidate.get('phone', 'Not Available')
+            if phone != 'Not Available':
+                st.markdown(f"**📱 Phone:** {phone}")
+        
+        st.markdown("---")
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="AI Recruiter", page_icon="🤝", layout="wide")
+st.set_page_config(page_title="AI Recruiter Pro", page_icon="🤝", layout="wide")
 
-st.title("🤝 AI-Powered Recruiter: Smart Candidate Finder")
-st.markdown("*Find the perfect candidates using natural language queries*")
+# Enhanced CSS
+st.markdown("""
+<style>
+.main-header {
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-align: center;
+    font-size: 3em;
+    font-weight: bold;
+    margin-bottom: 20px;
+}
+.subtitle {
+    text-align: center;
+    color: #7f8c8d;
+    font-size: 1.2em;
+    margin-bottom: 30px;
+}
+.requirement-card {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 15px;
+    border-radius: 10px;
+    margin: 10px 0;
+    border-left: 4px solid #667eea;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# Sidebar
-st.sidebar.header("💡 Search Tips")
+st.markdown('<h1 class="main-header">🤝 AI Recruiter Pro</h1>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Advanced candidate search powered by SERP API & GPT-4</p>', unsafe_allow_html=True)
+
+# Enhanced sidebar
+st.sidebar.header("💡 Advanced Search Guide")
 st.sidebar.markdown("""
-**For Best Results:**
-- Be specific about job titles
-- Mention key technical skills
-- Include experience requirements
-- Specify location preferences
-- Add work mode (remote/onsite/hybrid)
+### 🎯 **Optimization Tips:**
+- **Specific job titles** work best (e.g., "Senior React Developer")
+- **Include 3-5 key skills** for better matching
+- **Mention experience range** (2-4 years, 5+ years)
+- **Be specific about location** (Mumbai, Singapore, Remote)
+- **Add company preferences** (startup, MNC, fintech)
 
-**Examples:**
-- *"Looking for Python developer from Mumbai with 3 years Django experience"*
-- *"Need remote React developer, 5+ years, TypeScript"*
-- *"Data scientist in Bangalore, ML, Python, 2-4 years"*
-- *"Marketing Manager in Delhi with MBA and 4 years experience"*
-- *"Graphic Designer with Photoshop, Illustrator skills"*
+### 📝 **Enhanced Examples:**
+- *"Senior Python developer with Django, FastAPI, 5+ years, Mumbai, fintech experience"*
+- *"React Native mobile developer, 3-4 years, Bangalore, remote friendly"*
+- *"DevOps engineer with AWS, Docker, Kubernetes, 6+ years, Singapore"*
+- *"Data scientist with Python, ML, deep learning, 4+ years, startup experience"*
 
-**Remote Work Feature:**
-- When searching for remote candidates, we'll use your location to find nearby talent
-- This helps find candidates in your timezone and region
-- Override by specifying a location in your search query
+### 🚀 **New Features:**
+- ✅ SERP API integration for comprehensive search
+- ✅ GPT-4 powered query understanding
+- ✅ Advanced location matching with GPT-3.5
+- ✅ Multi-source candidate discovery
+- ✅ Enhanced skill extraction
+- ✅ Smart relevance scoring
+- ✅ Open-to-work detection
+
+### 🔧 **Configuration:**
+- Requires SERP API key and Azure OpenAI credentials
+- Set environment variables in .env file
+- Supports multiple search strategies
 """)
 
-# Main interface
-col1, col2 = st.columns([2, 1])
+# Detect user location
+user_location = detect_user_location()
+if user_location:
+    st.sidebar.success(f"📍 Detected location: {user_location}")
 
-with col1:
-    recruiter_query = st.text_area(
-        "🎯 Describe your ideal candidate:",
-        placeholder="e.g., Looking for Data Scientist with 2 years of experience from Bangalore who have knowledge of Python, Machine Learning, Statistics, SQL, AWS",
-        height=100
-    )
+# Main search interface
+st.markdown("## 🔍 Describe Your Ideal Candidate")
 
-with col2:
-    st.markdown("### 🔍 Quick Examples")
-    if st.button("Python Developer Example", use_container_width=True):
-        st.session_state.example_query = "Looking for Python developer from Mumbai with 3 years Django, Flask experience"
-    if st.button("Data Scientist Example", use_container_width=True):
-        st.session_state.example_query = "Need Data Scientist in Bangalore, 2+ years, Python, ML, Statistics"
-    if st.button("Marketing Manager Example", use_container_width=True):
-        st.session_state.example_query = "We are looking for Marketing Manager in Delhi with MBA and 4 years experience"
+# Enhanced input section
+user_query = st.text_area(
+    "Enter your recruitment requirements:",
+    placeholder="e.g., Senior Python developer with Django, 5+ years experience, Mumbai, remote work preferred",
+    height=100,
+    help="Be as specific as possible. Include job title, skills, experience, location, and any preferences."
+)
 
-# Use example if selected
-if 'example_query' in st.session_state:
-    recruiter_query = st.session_state.example_query
-    del st.session_state.example_query
+# Advanced options
+with st.expander("🔧 Advanced Search Options"):
+    adv_col1, adv_col2, adv_col3 = st.columns(3)
+    
+    with adv_col1:
+        max_results = st.slider("Max Results", 5, 50, 20)
+        search_depth = st.selectbox("Search Depth", ["Standard", "Deep", "Comprehensive"])
+    
+    with adv_col2:
+        preferred_sources = st.multiselect(
+            "Preferred Sources", 
+            ["LinkedIn", "GitHub", "Portfolio Sites", "Job Boards"],
+            default=["LinkedIn", "GitHub"]
+        )
+    
+    with adv_col3:
+        exclude_keywords = st.text_input("Exclude Keywords", placeholder="e.g., internship, fresher")
+        include_remote = st.checkbox("Include Remote Workers", value=True)
 
 # Search button
-if st.button("🔍 Find Candidates", type="primary", use_container_width=True):
-    if recruiter_query.strip():
-        # Show progress
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        # Step 1: Parse query
-        status_text.text("🤖 Understanding your requirements...")
-        progress_bar.progress(25)
-        
-        parsed_data = parse_recruiter_query(recruiter_query)
-        
-        # Step 2: Display parsed information
-        status_text.text("📋 Analyzing requirements...")
-        progress_bar.progress(50)
-        
-        st.subheader("🎯 Understood Requirements:")
-        
-        # Create a nice display for parsed data
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if parsed_data.get("job_title"):
-                st.info(f"**👔 Job Title**\n{parsed_data['job_title']}")
-            if parsed_data.get("experience"):
-                st.info(f"**⏱️ Experience**\n{parsed_data['experience']} years")
-        
-        with col2:
-            if parsed_data.get("skills"):
-                skills_text = ", ".join(parsed_data['skills'][:5])  # Show max 5 skills
-                if len(parsed_data['skills']) > 5:
-                    skills_text += f" +{len(parsed_data['skills'])-5} more"
-                st.info(f"**🛠️ Skills**\n{skills_text}")
-            if parsed_data.get("location"):
-                st.info(f"**📍 Location**\n{parsed_data['location']}")
-        
-        with col3:
-            if parsed_data.get("work_preference"):
-                st.info(f"**💼 Work Mode**\n{parsed_data['work_preference'].title()}")
-            if parsed_data.get("job_type"):
-                st.info(f"**📊 Job Type**\n{parsed_data['job_type'].title()}")
-        
-        # Show parsing status
-        if parsed_data.get("error"):
-            st.warning(f"⚠️ {parsed_data['error']}")
-        else:
-            st.success("✅ Successfully parsed using AI")
-        
-        # Step 3: Search for candidates
-        status_text.text("🔍 Searching LinkedIn for candidates...")
-        progress_bar.progress(75)
-        
-        results = fetch_linkedin_profiles(parsed_data)
-        
-        # Step 4: Process and display results
-        status_text.text("📊 Analyzing candidate matches...")
-        progress_bar.progress(100)
-        
-        if results:
-            # Score and sort profiles
-            for result in results:
-                score = score_profile(result, parsed_data)
-                result["score"] = score
-                result["match_category"] = get_match_category(score)
-            
-            # Sort by score
-            sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
-            
-            # Clear progress indicators
-            progress_bar.empty()
-            status_text.empty()
-            
-            # Display results
-            st.success(f"🎉 Found {len(sorted_results)} candidate profiles!")
-            
-            # Show match distribution
-            match_counts = {}
-            for result in sorted_results:
-                category = result["match_category"]
-                match_counts[category] = match_counts.get(category, 0) + 1
-            
-            cols = st.columns(len(match_counts))
-            for i, (category, count) in enumerate(match_counts.items()):
-                with cols[i]:
-                    st.metric(category, count)
-            
-            st.divider()
-            
-            # Display individual candidate cards
-            st.subheader("👥 Candidate Profiles")
-            for i, profile in enumerate(sorted_results, 1):
-                display_candidate_card(profile, i)
-                
-                
-        else:
-            progress_bar.empty()
-            status_text.empty()
-            st.error("❌ No candidate profiles found. Try refining your search terms or check your SERP API key.")
-            
-            # Suggestions for better search
-            st.markdown("""
-            ### 💡 Try these tips:
-            - Use more common job titles
-            - Include alternative skill names
-            - Try broader location terms
-            - Check if your SERP API key is valid
-            """)
+if st.button("🚀 Find Candidates", type="primary", use_container_width=True):
+    if not user_query.strip():
+        st.error("⚠️ Please enter your recruitment requirements.")
     else:
-        st.warning("⚠️ Please describe the candidate you're looking for.")
+        # Initialize session state for results
+        if 'search_results' not in st.session_state:
+            st.session_state.search_results = None
+        
+        with st.spinner("🤖 Analyzing your requirements..."):
+            # Parse the query
+            parsed_data = parse_recruiter_query(user_query)
+            
+            if "error" in parsed_data:
+                st.error(f"❌ Error parsing query: {parsed_data['error']}")
+            else:
+                # Display parsed requirements
+                st.success("✅ Requirements understood!")
+                
+                # Show parsed data in an organized way
+                st.markdown("### 📋 Extracted Requirements")
+                
+                req_col1, req_col2, req_col3 = st.columns(3)
+                
+                with req_col1:
+                    if parsed_data.get("job_title"):
+                        st.markdown(f'<div class="requirement-card"><strong>🎯 Job Title:</strong><br>{parsed_data["job_title"]}</div>', unsafe_allow_html=True)
+                    
+                    if parsed_data.get("experience"):
+                        st.markdown(f'<div class="requirement-card"><strong>⏱️ Experience:</strong><br>{parsed_data["experience"]} years</div>', unsafe_allow_html=True)
+                
+                with req_col2:
+                    if parsed_data.get("skills"):
+                        skills_display = ", ".join(parsed_data["skills"][:5])
+                        if len(parsed_data["skills"]) > 5:
+                            skills_display += f" +{len(parsed_data['skills'])-5} more"
+                        st.markdown(f'<div class="requirement-card"><strong>🛠️ Skills:</strong><br>{skills_display}</div>', unsafe_allow_html=True)
+                    
+                    if parsed_data.get("location"):
+                        st.markdown(f'<div class="requirement-card"><strong>📍 Location:</strong><br>{parsed_data["location"]}</div>', unsafe_allow_html=True)
+                
+                with req_col3:
+                    if parsed_data.get("work_preference"):
+                        st.markdown(f'<div class="requirement-card"><strong>💼 Work Style:</strong><br>{parsed_data["work_preference"].title()}</div>', unsafe_allow_html=True)
+                    
+                    if parsed_data.get("industry"):
+                        st.markdown(f'<div class="requirement-card"><strong>🏢 Industry:</strong><br>{parsed_data["industry"].title()}</div>', unsafe_allow_html=True)
+                
+                st.markdown("---")
+                
+                # Fetch candidates
+                with st.spinner("🔍 Searching for candidates across multiple sources..."):
+                    candidates = fetch_candidates_serp(parsed_data)
+                    
+                    if not candidates:
+                        st.warning("⚠️ No candidates found. Try adjusting your search criteria.")
+                    else:
+                        # Score and sort candidates
+                        scored_candidates = []
+                        for candidate in candidates:
+                            score = score_candidate(candidate, parsed_data)
+                            match_category = get_match_category(score)
+                            scored_candidates.append((candidate, score, match_category))
+                        
+                        # Sort by score
+                        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+                        
+                        # Limit results
+                        scored_candidates = scored_candidates[:max_results]
+                        
+                        st.session_state.search_results = (scored_candidates, parsed_data)
+
+# Display results if available
+if st.session_state.get('search_results'):
+    scored_candidates, parsed_data = st.session_state.search_results
+    
+    # Results header
+    st.markdown("## 🎯 Candidate Results")
+    
+    # Results summary
+    result_col1, result_col2, result_col3, result_col4 = st.columns(4)
+    
+    with result_col1:
+        st.metric("Total Found", len(scored_candidates))
+    
+    with result_col2:
+        excellent_matches = sum(1 for _, score, _ in scored_candidates if score >= 35)
+        st.metric("Excellent Matches", excellent_matches)
+    
+    with result_col3:
+        good_matches = sum(1 for _, score, _ in scored_candidates if 25 <= score < 35)
+        st.metric("Good Matches", good_matches)
+    
+    with result_col4:
+        avg_score = sum(score for _, score, _ in scored_candidates) / len(scored_candidates) if scored_candidates else 0
+        st.metric("Average Score", f"{avg_score:.1f}/50")
+    
+    # Filter options
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    
+    with filter_col1:
+        min_score_filter = st.slider("Minimum Score", 0, 50, 0)
+    
+    with filter_col2:
+        source_filter = st.multiselect(
+            "Filter by Source", 
+            list(set(candidate.get('source', 'Unknown') for candidate, _, _ in scored_candidates)),
+            default=[]
+        )
+    
+    with filter_col3:
+        location_filter = st.multiselect(
+            "Filter by Location",
+            list(set(candidate.get('location', 'Unknown') for candidate, _, _ in scored_candidates)),
+            default=[]
+        )
+    
+    # Apply filters
+    filtered_candidates = []
+    for candidate, score, match_category in scored_candidates:
+        if score < min_score_filter:
+            continue
+        if source_filter and candidate.get('source', 'Unknown') not in source_filter:
+            continue
+        if location_filter and candidate.get('location', 'Unknown') not in location_filter:
+            continue
+        filtered_candidates.append((candidate, score, match_category))
+    
+    st.markdown(f"### Showing {len(filtered_candidates)} candidates")
+    
+    # Export options
+    export_col1, export_col2 = st.columns([1, 4])
+    
+    with export_col1:
+        if st.button("📊 Export to CSV"):
+            # Create CSV data
+            csv_data = []
+            for candidate, score, match_category in filtered_candidates:
+                csv_data.append({
+                    'Name': candidate.get('name', ''),
+                    'Score': score,
+                    'Match Category': match_category.replace('🔥 ', '').replace('✅ ', '').replace('⚡ ', '').replace('📋 ', '').replace('🔍 ', ''),
+                    'Source': candidate.get('source', ''),
+                    'Location': candidate.get('location', ''),
+                    'Experience': candidate.get('experience', ''),
+                    'Skills': ', '.join(candidate.get('skills', [])),
+                    'Email': candidate.get('email', ''),
+                    'Phone': candidate.get('phone', ''),
+                    'Profile Link': candidate.get('link', ''),
+                    'Open to Work': candidate.get('open_to_work', False)
+                })
+            
+            import pandas as pd
+            df = pd.DataFrame(csv_data)
+            csv = df.to_csv(index=False)
+            
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"candidates_{parsed_data.get('job_title', 'search').replace(' ', '_')}.csv",
+                mime="text/csv"
+            )
+    
+    # Display candidates
+    for i, (candidate, score, match_category) in enumerate(filtered_candidates, 1):
+        display_candidate_card(candidate, i, score, match_category)
+    
+    # Pagination for large results
+    if len(filtered_candidates) > 20:
+        st.markdown("### 📄 Need more results?")
+        if st.button("Load More Candidates"):
+            st.info("Implement pagination logic here for better UX")
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #7f8c8d;'>
+    <p>🤝 <strong>AI Recruiter Pro</strong> | Powered by SERP API & GPT-4 | Built with ❤️ using Streamlit</p>
+    <p><small>⚡ Fast • 🎯 Accurate • 🔒 Secure</small></p>
+</div>
+""", unsafe_allow_html=True)
+
+# Add some spacing
+st.markdown("<br><br>", unsafe_allow_html=True)

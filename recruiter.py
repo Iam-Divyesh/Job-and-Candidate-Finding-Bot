@@ -211,7 +211,7 @@ def detect_user_location() -> Optional[str]:
 
 # --- Enhanced candidate fetching using SERP API ---
 def fetch_candidates_serp(parsed_data: Dict) -> List[Dict]:
-    """Fetch candidates using SERP API with multiple search strategies"""
+    """Fetch candidates using SERP API with multiple search strategies and strict location filtering"""
     if not serp_api_key:
         st.error("SERP API key not found. Please set SERP_API_KEY in your environment variables.")
         return []
@@ -238,7 +238,18 @@ def fetch_candidates_serp(parsed_data: Dict) -> List[Dict]:
     unique_candidates = remove_duplicates(all_candidates)
     enhanced_candidates = enhance_candidate_data(unique_candidates, parsed_data)
     
-    return enhanced_candidates
+    # Strict city-level location filtering (must match exactly)
+    required_location = normalize_location(location).lower() if location else None
+    if required_location:
+        filtered_candidates = []
+        for c in enhanced_candidates:
+            candidate_loc = normalize_location(c.get('location', '')).lower()
+            # Accept only if required_location == candidate_loc (city-level)
+            if required_location == candidate_loc:
+                filtered_candidates.append(c)
+        return filtered_candidates
+    else:
+        return enhanced_candidates
 
 def build_search_queries(parsed_data: Dict) -> List[str]:
     """Build multiple targeted search queries"""
@@ -250,36 +261,33 @@ def build_search_queries(parsed_data: Dict) -> List[str]:
     
     queries = []
     
-    # Query 1: LinkedIn focused search
-    linkedin_query = f'site:linkedin.com/in "{job_title}"'
+    # Always include city and country if location is specified
+    location_query = ''
     if location:
-        linkedin_query += f' "{location}"'
+        location_query = f' "{location}" India'
+    
+    # Query 1: LinkedIn focused search
+    linkedin_query = f'site:linkedin.com/in -site:in.linkedin.com/in "{job_title}"{location_query}'
     if skills:
         linkedin_query += f' {" ".join(skills[:2])}'
     queries.append(linkedin_query)
     
     # Query 2: General professional profile search
-    general_query = f'"{job_title}" resume CV'
-    if location:
-        general_query += f' "{location}"'
+    general_query = f'"{job_title}" resume CV{location_query}'
     if experience:
         general_query += f' "{experience} years"'
     queries.append(general_query)
     
     # Query 3: Skills-focused search
     if skills:
-        skills_query = f'{" ".join(skills[:3])} developer engineer'
-        if location:
-            skills_query += f' "{location}"'
+        skills_query = f'{" ".join(skills[:3])} developer engineer{location_query}'
         if work_preference == "remote":
             skills_query += ' remote'
         queries.append(skills_query)
     
     # Query 4: Industry-specific search
     if parsed_data.get("industry"):
-        industry_query = f'"{job_title}" {parsed_data["industry"]}'
-        if location:
-            industry_query += f' "{location}"'
+        industry_query = f'"{job_title}" {parsed_data["industry"]}{location_query}'
         queries.append(industry_query)
     
     return queries
@@ -375,6 +383,12 @@ def process_serp_result(result: Dict, target_location: str, work_preference: str
         if not is_relevant_profile(title, link, snippet):
             return None
         
+        # Get thumbnail image from SERP API result
+        thumbnail = result.get('thumbnail', {}).get('url', '')
+        # If no thumbnail in SERP result, try to get from rich_snippet
+        if not thumbnail and 'rich_snippet' in result:
+            thumbnail = result.get('rich_snippet', {}).get('top', {}).get('detected_extensions', {}).get('image_url', '')
+        
         # Extract candidate information
         candidate = {
             'name': extract_name_from_title(title),
@@ -389,7 +403,7 @@ def process_serp_result(result: Dict, target_location: str, work_preference: str
             'linkedin_profile': link if 'linkedin.com' in link else "Not Available",
             'open_to_work': 'open to work' in snippet.lower() or 'looking for' in snippet.lower(),
             'remote_friendly': work_preference == 'remote' and ('remote' in snippet.lower() or 'work from home' in snippet.lower()),
-            'image': get_default_image()
+            'image': thumbnail if thumbnail else get_default_image()
         }
         
         return candidate
@@ -454,28 +468,19 @@ def extract_name_from_title(title: str) -> str:
     return "Name Not Available"
 
 def extract_location_from_snippet(snippet: str, target_location: str) -> str:
-    """Extract location information from snippet using GPT-3.5"""
+    """Expert-level extraction of city from LinkedIn snippet using GPT and strict regex. Only return city if present."""
     if not client:
         return "Location Not Specified"
-    
     try:
-        system_prompt = """You are a location extraction expert. Extract the most relevant location from the given text.
-
-        Rules:
-        1. Look for city names, regions, or countries
-        2. Prefer specific cities over general regions
-        3. Return only the location name, nothing else
-        4. If no clear location found, return "Location Not Specified"
-        5. Standardize common variations (e.g., "NYC" → "New York")
-        
-        Examples:
-        - "Based in Mumbai, India" → "Mumbai"
-        - "Working remotely from Bangalore" → "Bangalore"
-        - "Located in San Francisco Bay Area" → "San Francisco"
-        """
-        
-        user_prompt = f"Extract location from: {snippet}"
-        
+        # Use GPT to extract the most relevant city (not country or region)
+        system_prompt = (
+            "You are a location extraction expert. Extract ONLY the city name from the following text. "
+            "If there is no city, or only a country/region is present, return 'Location Not Specified'. "
+            "Examples: 'Mumbai, Maharashtra, India' -> 'Mumbai'; 'United States' -> 'Location Not Specified'; "
+            "'St Paul, Minnesota, United States' -> 'St Paul'; 'Bangalore, India' -> 'Bangalore'; "
+            "'India' -> 'Location Not Specified'"
+        )
+        user_prompt = f"Extract city from: {snippet}"
         response = client.chat.completions.create(
             model=deployment,
             messages=[
@@ -483,16 +488,20 @@ def extract_location_from_snippet(snippet: str, target_location: str) -> str:
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.1,
-            max_tokens=50
+            max_tokens=20
         )
-        
         location = response.choices[0].message.content.strip()
-        
         if location and location != "Location Not Specified":
             return normalize_location(location)
-        
+        # Fallback: strict regex for city extraction (city, state, country)
+        import re
+        match = re.match(r'([A-Za-z .\-]+),', snippet)
+        if match:
+            city = match.group(1).strip()
+            # Filter out generic country/region names
+            if city.lower() not in ["india", "united states", "usa", "uk", "singapore", "canada", "australia"]:
+                return normalize_location(city)
         return "Location Not Specified"
-        
     except Exception as e:
         st.warning(f"Location extraction error: {e}")
         return "Location Not Specified"
@@ -832,24 +841,10 @@ user_query = st.text_area(
     help="Be as specific as possible. Include job title, skills, experience, location, and any preferences."
 )
 
-# Advanced options
-with st.expander("🔧 Advanced Search Options"):
-    adv_col1, adv_col2, adv_col3 = st.columns(3)
-    
-    with adv_col1:
-        max_results = st.slider("Max Results", 5, 50, 20)
-        search_depth = st.selectbox("Search Depth", ["Standard", "Deep", "Comprehensive"])
-    
-    with adv_col2:
-        preferred_sources = st.multiselect(
-            "Preferred Sources", 
-            ["LinkedIn", "GitHub", "Portfolio Sites", "Job Boards"],
-            default=["LinkedIn", "GitHub"]
-        )
-    
-    with adv_col3:
-        exclude_keywords = st.text_input("Exclude Keywords", placeholder="e.g., internship, fresher")
-        include_remote = st.checkbox("Include Remote Workers", value=True)
+# Set default search options (no UI for advanced options)
+max_results = 10
+search_depth = "Deep"
+preferred_sources = ["LinkedIn"]
 
 # Search button
 if st.button("🚀 Find Candidates", type="primary", use_container_width=True):
